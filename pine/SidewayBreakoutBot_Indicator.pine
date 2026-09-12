@@ -25,8 +25,6 @@ fvgMinATRMult   = input.float(0.0, "Min FVG Size (x ATR)", minval=0, group=grpZo
 maxBarsRetrace  = input.int(30, "Max Bars to Wait for Confirmation", minval=1, group=grpZone)
 
 grpRisk = "Risk Management"
-accountSize     = input.float(10000, "Account Size (for sizing display)", minval=0, group=grpRisk)
-riskPercent     = input.float(1.0, "Risk % per Trade", minval=0.01, group=grpRisk)
 slBufferATRMult = input.float(0.1, "SL Buffer (x ATR)", minval=0, group=grpRisk)
 
 grpTP = "Take Profit"
@@ -35,8 +33,7 @@ tp2R = input.float(2.0, "TP2 (R multiple)", minval=0.1, group=grpTP)
 tp3R = input.float(3.0, "TP3 (R multiple)", minval=0.1, group=grpTP)
 
 grpVis = "Visuals"
-showZone   = input.bool(true, "Show Retracement Zone", group=grpVis)
-showLevels = input.bool(true, "Show Entry/SL/TP Levels", group=grpVis)
+showLabels = input.bool(true, "Show Entry Labels", group=grpVis)
 
 // ───────────────────────────── Range Detector (LuxAlgo) ─────────────────────────────
 var box   bx   = na
@@ -114,13 +111,6 @@ var float tp3Price    = na
 var bool  tp1Hit      = false
 var bool  tp2Hit      = false
 var bool  tp3Hit      = false
-var float qtyDisplay  = na
-var box   zoneBox     = na
-var line  slLine      = na
-var line  tp1Line     = na
-var line  tp2Line     = na
-var line  tp3Line     = na
-
 bool entrySignal = false
 bool exitSignal  = false
 bool isLongEntry = false
@@ -140,14 +130,8 @@ if state == 3
         tp3Hit := true
         alert("Sideway Breakout Bot: TP3 hit, trade closed", alert.freq_once_per_bar_close)
 
-    if showLevels and not na(slLine)
-        line.set_y1(slLine, currentStop)
-        line.set_y2(slLine, currentStop)
-
     if stopHit or tp3Hit
         exitSignal := true
-        if not na(zoneBox)
-            box.delete(zoneBox)
         state := 0
         lockedHigh := na
         lockedLow := na
@@ -166,7 +150,6 @@ if state == 3
         tp1Hit := false
         tp2Hit := false
         tp3Hit := false
-        qtyDisplay := na
 
 // ---- Arm/refresh watch whenever the range detector (re)confirms a range ----
 if rangeEvent and (state == 0 or state == 1)
@@ -235,8 +218,6 @@ if state == 1
         touchedZone := false
         state := 2
 
-        if showZone
-            zoneBox := box.new(bar_index, zoneHigh, bar_index, zoneLow, border_color=color.orange, bgcolor=color.new(color.orange, 85))
         alert("Sideway Breakout Bot: " + (dir == 1 ? "bullish" : "bearish") + " breakout confirmed, zone identified", alert.freq_once_per_bar_close)
 
     else if bar_index - lockBar > maxBarsWatch
@@ -258,13 +239,9 @@ if state == 1
         tp1Hit := false
         tp2Hit := false
         tp3Hit := false
-        qtyDisplay := na
 
 // ---- State 2: wait for retracement + confirmation candle ----
 if state == 2
-    if showZone and not na(zoneBox)
-        box.set_right(zoneBox, bar_index)
-
     touched = dir == 1 ? low <= zoneMid : high >= zoneMid
     if touched
         touchedZone := true
@@ -284,26 +261,19 @@ if state == 2
         tp1Price := dir == 1 ? entryPrice + r * tp1R : entryPrice - r * tp1R
         tp2Price := dir == 1 ? entryPrice + r * tp2R : entryPrice - r * tp2R
         tp3Price := dir == 1 ? entryPrice + r * tp3R : entryPrice - r * tp3R
-        qtyDisplay := r > 0 ? (accountSize * (riskPercent / 100)) / r : na
 
         state := 3
         entrySignal := true
         isLongEntry := dir == 1
         isShortEntry := dir == -1
-        if showLevels
-            slLine := line.new(bar_index, slPrice, bar_index + 1, slPrice, color=color.red, style=line.style_dashed, extend=extend.right)
-            tp1Line := line.new(bar_index, tp1Price, bar_index + 1, tp1Price, color=color.green, style=line.style_dotted, extend=extend.right)
-            tp2Line := line.new(bar_index, tp2Price, bar_index + 1, tp2Price, color=color.green, style=line.style_dotted, extend=extend.right)
-            tp3Line := line.new(bar_index, tp3Price, bar_index + 1, tp3Price, color=color.green, style=line.style_dotted, extend=extend.right)
+        if showLabels
             if dir == 1
-                label.new(bar_index, low, "LONG ENTRY\nQty~" + str.tostring(qtyDisplay, "#.####"), style=label.style_label_up, color=color.green, textcolor=color.white, yloc=yloc.belowbar)
+                label.new(bar_index, low, "LONG", style=label.style_label_up, color=color.green, textcolor=color.white, yloc=yloc.belowbar)
             else
-                label.new(bar_index, high, "SHORT ENTRY\nQty~" + str.tostring(qtyDisplay, "#.####"), style=label.style_label_down, color=color.red, textcolor=color.white, yloc=yloc.abovebar)
+                label.new(bar_index, high, "SHORT", style=label.style_label_down, color=color.red, textcolor=color.white, yloc=yloc.abovebar)
         alert("Sideway Breakout Bot: " + (dir == 1 ? "LONG" : "SHORT") + " entry signal", alert.freq_once_per_bar_close)
 
     else if invalidated or barsSinceBreakout > maxBarsRetrace
-        if not na(zoneBox)
-            box.delete(zoneBox)
         state := 0
         lockedHigh := na
         lockedLow := na
@@ -322,7 +292,6 @@ if state == 2
         tp1Hit := false
         tp2Hit := false
         tp3Hit := false
-        qtyDisplay := na
 
 // ───────────────────────────── Plots / signals ─────────────────────────────
 plotshape(isLongEntry, "Long Entry", shape.triangleup, location.belowbar, color.green, size=size.small)
