@@ -13,6 +13,7 @@ upCss       = input.color(#089981, "Broken Upward", group=grpRange)
 dnCss       = input.color(#f23645, "Broken Downward", group=grpRange)
 unbrokenCss = input.color(#2157f3, "Unbroken", group=grpRange)
 maxBarsWatch = input.int(50, "Max Bars to Wait for Breakout", minval=1, group=grpRange)
+maxConcurrentSetups = input.int(3, "Max Concurrent Setups", minval=1, maxval=10, group=grpRange)
 
 grpBreak = "Breakout"
 atrLength        = input.int(14, "ATR Length (SL/Filters)", minval=1, group=grpBreak)
@@ -35,6 +36,7 @@ tp3R = input.float(3.0, "TP3 (R multiple)", minval=0.1, group=grpTP)
 
 grpVis = "Visuals"
 showTradeZone = input.bool(true, "Show Risk/Reward Zone", group=grpVis)
+showTPLabels  = input.bool(true, "Show TP1/TP2/TP3 Labels", group=grpVis)
 
 // ───────────────────────────── Range Detector (LuxAlgo) ─────────────────────────────
 var box   bx   = na
@@ -94,7 +96,7 @@ atrVal = ta.atr(atrLength)
 
 // Scans the breakout leg for the nearest FVG, else a breaker candle, else falls
 // back to a leg retracement. Returns [zoneHigh, zoneLow]. Read-only over outer
-// state (lockBar, lockedHigh, lockedLow, atrVal) so it stays a plain function.
+// state so it stays a plain function.
 f_findZone(d, lockBarArg, lockedHighArg, lockedLowArg) =>
     scanLen = math.min(bar_index - lockBarArg, zoneScanMaxBars)
     float fH = na
@@ -139,209 +141,187 @@ f_findZone(d, lockBarArg, lockedHighArg, lockedLowArg) =>
 
     [fH, fL]
 
-// ───────────────────────────── State machine ─────────────────────────────
-// 0 = idle, 1 = watching for breakout, 4 = awaiting confirmation candle (fakeout filter),
-// 2 = waiting for retracement confirmation, 3 = hypothetical open trade
-var int   state       = 0
-var float lockedHigh  = na
-var float lockedLow   = na
-var int   lockBar     = na
-var int   dir         = 0
-var int   breakoutTime = na
-var float zoneHigh    = na
-var float zoneLow     = na
-var float zoneMid     = na
-var bool  touchedZone = false
-var float slPrice     = na
-var float entryPrice  = na
-var float tp1Price    = na
-var float tp2Price    = na
-var float tp3Price    = na
-var bool  tp1Hit      = false
-var bool  tp2Hit      = false
-var bool  tp3Hit      = false
-var box   riskBox     = na
-var box   rewardBox   = na
-var line  entryLine   = na
+// ───────────────────────────── Setup tracking ─────────────────────────────
+// Each Setup is an independent breakout/retracement/trade lifecycle so several
+// can run concurrently -- one being watched/traded no longer blocks detecting
+// the next one.
+// state: 1 = watching for breakout, 4 = awaiting confirmation candle (fakeout
+// filter), 2 = waiting for retracement confirmation, 3 = hypothetical open trade
+type Setup
+    int   state
+    float lockedHigh
+    float lockedLow
+    int   lockBar
+    int   dir
+    int   breakoutTime
+    float zoneHigh
+    float zoneLow
+    float zoneMid
+    bool  touchedZone
+    float slPrice
+    float entryPrice
+    float tp1Price
+    float tp2Price
+    float tp3Price
+    bool  tp1Hit
+    bool  tp2Hit
+    bool  tp3Hit
+    box   riskBox
+    box   rewardBox
+    line  entryLine
+    line  tp1Line
+    line  tp2Line
+    line  tp3Line
+    label tp1Lbl
+    label tp2Lbl
+    label tp3Lbl
 
-bool entrySignal = false
-bool exitSignal  = false
-bool isLongEntry = false
+var array<Setup> setups = array.new<Setup>()
+
+bool entrySignal  = false
+bool exitSignal   = false
+bool isLongEntry  = false
 bool isShortEntry = false
 
-// ---- State 3: track hypothetical open trade for alerts, no real position ----
-if state == 3
-    if showTradeZone and not na(riskBox)
-        box.set_right(riskBox, bar_index)
-        box.set_right(rewardBox, bar_index)
-        line.set_x2(entryLine, bar_index)
+// ---- Arm a new setup whenever the range detector (re)confirms a range ----
+if rangeEvent and array.size(setups) < maxConcurrentSetups
+    array.push(setups, Setup.new(state=1, lockedHigh=rMax, lockedLow=rMin, lockBar=n, dir=0, breakoutTime=na,
+         zoneHigh=na, zoneLow=na, zoneMid=na, touchedZone=false, slPrice=na, entryPrice=na,
+         tp1Price=na, tp2Price=na, tp3Price=na, tp1Hit=false, tp2Hit=false, tp3Hit=false,
+         riskBox=na, rewardBox=na, entryLine=na, tp1Line=na, tp2Line=na, tp3Line=na,
+         tp1Lbl=na, tp2Lbl=na, tp3Lbl=na))
 
-    currentStop = tp1Hit ? entryPrice : slPrice
-    stopHit = dir == 1 ? low <= currentStop : high >= currentStop
-    if not tp1Hit and (dir == 1 ? high >= tp1Price : low <= tp1Price)
-        tp1Hit := true
-        alert("Sideway Breakout Bot: TP1 hit, SL moved to breakeven", alert.freq_once_per_bar_close)
-    if tp1Hit and not tp2Hit and (dir == 1 ? high >= tp2Price : low <= tp2Price)
-        tp2Hit := true
-        alert("Sideway Breakout Bot: TP2 hit", alert.freq_once_per_bar_close)
-    if tp2Hit and not tp3Hit and (dir == 1 ? high >= tp3Price : low <= tp3Price)
-        tp3Hit := true
-        alert("Sideway Breakout Bot: TP3 hit, trade closed", alert.freq_once_per_bar_close)
+// ---- Advance every active setup, one state-step per bar ----
+numSetups = array.size(setups)
+if numSetups > 0
+    for idx = numSetups - 1 to 0
+        Setup s = array.get(setups, idx)
+        bool removeThis = false
 
-    if stopHit or tp3Hit
-        exitSignal := true
-        state := 0
-        lockedHigh := na
-        lockedLow := na
-        lockBar := na
-        dir := 0
-        breakoutTime := na
-        zoneHigh := na
-        zoneLow := na
-        zoneMid := na
-        touchedZone := false
-        slPrice := na
-        entryPrice := na
-        tp1Price := na
-        tp2Price := na
-        tp3Price := na
-        tp1Hit := false
-        tp2Hit := false
-        tp3Hit := false
+        if s.state == 3
+            if showTradeZone and not na(s.riskBox)
+                box.set_right(s.riskBox, bar_index)
+                box.set_right(s.rewardBox, bar_index)
+                line.set_x2(s.entryLine, bar_index)
+                line.set_x2(s.tp1Line, bar_index)
+                line.set_x2(s.tp2Line, bar_index)
+                line.set_x2(s.tp3Line, bar_index)
 
-// ---- Arm/refresh watch whenever the range detector (re)confirms a range ----
-if rangeEvent and (state == 0 or state == 1)
-    lockedHigh := rMax
-    lockedLow := rMin
-    lockBar := n
-    state := 1
+            stopNow = s.tp1Hit ? s.entryPrice : s.slPrice
+            stopHit = s.dir == 1 ? low <= stopNow : high >= stopNow
+            if not s.tp1Hit and (s.dir == 1 ? high >= s.tp1Price : low <= s.tp1Price)
+                s.tp1Hit := true
+                alert("Sideway Breakout Bot: TP1 hit, SL moved to breakeven", alert.freq_once_per_bar_close)
+            if s.tp1Hit and not s.tp2Hit and (s.dir == 1 ? high >= s.tp2Price : low <= s.tp2Price)
+                s.tp2Hit := true
+                alert("Sideway Breakout Bot: TP2 hit", alert.freq_once_per_bar_close)
+            if s.tp2Hit and not s.tp3Hit and (s.dir == 1 ? high >= s.tp3Price : low <= s.tp3Price)
+                s.tp3Hit := true
+                alert("Sideway Breakout Bot: TP3 hit, trade closed", alert.freq_once_per_bar_close)
 
-// ---- State 1: watch for full-body breakout ----
-if state == 1
-    bodySize = math.abs(close - open)
-    passesBody = not useBodyFilter or bodySize >= bodyATRMult * atrVal
-    bullBreak = math.min(open, close) > lockedHigh and passesBody
-    bearBreak = math.max(open, close) < lockedLow and passesBody
+            if stopHit or s.tp3Hit
+                exitSignal := true
+                removeThis := true
 
-    if bullBreak or bearBreak
-        dir := bullBreak ? 1 : -1
-        breakoutTime := time
+        else if s.state == 1
+            bodySize = math.abs(close - open)
+            passesBody = not useBodyFilter or bodySize >= bodyATRMult * atrVal
+            bullBreak = math.min(open, close) > s.lockedHigh and passesBody
+            bearBreak = math.max(open, close) < s.lockedLow and passesBody
 
-        if useFakeoutFilter
-            state := 4
-            alert("Sideway Breakout Bot: " + (bullBreak ? "bullish" : "bearish") + " breakout, awaiting confirmation candle", alert.freq_once_per_bar_close)
-        else
-            [zH, zL] = f_findZone(dir, lockBar, lockedHigh, lockedLow)
-            zoneHigh := zH
-            zoneLow := zL
-            zoneMid := (zH + zL) / 2
-            touchedZone := false
-            state := 2
-            alert("Sideway Breakout Bot: " + (dir == 1 ? "bullish" : "bearish") + " breakout confirmed, zone identified", alert.freq_once_per_bar_close)
+            if bullBreak or bearBreak
+                s.dir := bullBreak ? 1 : -1
+                s.breakoutTime := time
+                if useFakeoutFilter
+                    s.state := 4
+                    alert("Sideway Breakout Bot: " + (bullBreak ? "bullish" : "bearish") + " breakout, awaiting confirmation candle", alert.freq_once_per_bar_close)
+                else
+                    [zH, zL] = f_findZone(s.dir, s.lockBar, s.lockedHigh, s.lockedLow)
+                    s.zoneHigh := zH
+                    s.zoneLow := zL
+                    s.zoneMid := (zH + zL) / 2
+                    s.touchedZone := false
+                    s.state := 2
+                    alert("Sideway Breakout Bot: " + (s.dir == 1 ? "bullish" : "bearish") + " breakout confirmed, zone identified", alert.freq_once_per_bar_close)
+            else if bar_index - s.lockBar > maxBarsWatch
+                removeThis := true
 
-    else if bar_index - lockBar > maxBarsWatch
-        state := 0
-        lockedHigh := na
-        lockedLow := na
-        lockBar := na
-        dir := 0
-        breakoutTime := na
-        zoneHigh := na
-        zoneLow := na
-        zoneMid := na
-        touchedZone := false
-        slPrice := na
-        entryPrice := na
-        tp1Price := na
-        tp2Price := na
-        tp3Price := na
-        tp1Hit := false
-        tp2Hit := false
-        tp3Hit := false
+        else if s.state == 4
+            bodySize4 = math.abs(close - open)
+            passesBody4 = not useBodyFilter or bodySize4 >= bodyATRMult * atrVal
+            confirmed = s.dir == 1 ? math.min(open, close) > s.lockedHigh and passesBody4 : math.max(open, close) < s.lockedLow and passesBody4
 
-// ---- State 4: require the next candle to close entirely away from the range
-// too (fakeout filter) before hunting for a retracement zone ----
-if state == 4
-    bodySize4 = math.abs(close - open)
-    passesBody4 = not useBodyFilter or bodySize4 >= bodyATRMult * atrVal
-    confirmed = dir == 1 ? math.min(open, close) > lockedHigh and passesBody4 : math.max(open, close) < lockedLow and passesBody4
+            if confirmed
+                s.breakoutTime := time
+                [zH, zL] = f_findZone(s.dir, s.lockBar, s.lockedHigh, s.lockedLow)
+                s.zoneHigh := zH
+                s.zoneLow := zL
+                s.zoneMid := (zH + zL) / 2
+                // The scanned leg spans the original breakout through this
+                // confirmation candle, so it can include a pullback that
+                // already reached the zone -- seed touchedZone from that
+                // history instead of always starting at false.
+                scanLen2 = math.max(math.min(bar_index - s.lockBar, zoneScanMaxBars), 1)
+                s.touchedZone := s.dir == 1 ? ta.lowest(low, scanLen2) <= s.zoneMid : ta.highest(high, scanLen2) >= s.zoneMid
+                s.state := 2
+                alert("Sideway Breakout Bot: " + (s.dir == 1 ? "bullish" : "bearish") + " breakout confirmed, zone identified", alert.freq_once_per_bar_close)
+            else
+                s.dir := 0
+                s.breakoutTime := na
+                s.state := 1
+                alert("Sideway Breakout Bot: breakout failed confirmation (fakeout), watching for a new breakout", alert.freq_once_per_bar_close)
 
-    if confirmed
-        breakoutTime := time
-        [zH, zL] = f_findZone(dir, lockBar, lockedHigh, lockedLow)
-        zoneHigh := zH
-        zoneLow := zL
-        zoneMid := (zH + zL) / 2
-        // The scanned leg spans the original breakout through this confirmation
-        // candle, so it can include a pullback that already reached the zone
-        // (e.g. the fakeout candle itself) -- seed touchedZone from that history
-        // instead of always starting at false, or a retest-then-continue move
-        // never gets recognized as a retracement.
-        scanLen2 = math.max(math.min(bar_index - lockBar, zoneScanMaxBars), 1)
-        touchedZone := dir == 1 ? ta.lowest(low, scanLen2) <= zoneMid : ta.highest(high, scanLen2) >= zoneMid
-        state := 2
-        alert("Sideway Breakout Bot: " + (dir == 1 ? "bullish" : "bearish") + " breakout confirmed, zone identified", alert.freq_once_per_bar_close)
-    else
-        dir := 0
-        breakoutTime := na
-        state := 1
-        alert("Sideway Breakout Bot: breakout failed confirmation (fakeout), watching for a new breakout", alert.freq_once_per_bar_close)
+        else if s.state == 2
+            touched = s.dir == 1 ? low <= s.zoneMid : high >= s.zoneMid
+            if touched
+                s.touchedZone := true
 
-// ---- State 2: wait for retracement + confirmation candle ----
-if state == 2
-    touched = dir == 1 ? low <= zoneMid : high >= zoneMid
-    if touched
-        touchedZone := true
+            confirmBull = close > open and close > s.zoneMid
+            confirmBear = close < open and close < s.zoneMid
+            confirmation = s.touchedZone and (s.dir == 1 ? confirmBull : confirmBear)
 
-    confirmBull = close > open and close > zoneMid
-    confirmBear = close < open and close < zoneMid
-    confirmation = touchedZone and (dir == 1 ? confirmBull : confirmBear)
+            invalidated = s.dir == 1 ? close < s.lockedLow : close > s.lockedHigh
+            minutesSinceBreakout = (time - s.breakoutTime) / 60000.0
 
-    invalidated = dir == 1 ? close < lockedLow : close > lockedHigh
-    minutesSinceBreakout = (time - breakoutTime) / 60000.0
+            if confirmation
+                s.entryPrice := close
+                buffer = slBufferATRMult * atrVal
+                s.slPrice := s.dir == 1 ? s.lockedLow - buffer : s.lockedHigh + buffer
+                r = math.abs(s.entryPrice - s.slPrice)
+                s.tp1Price := s.dir == 1 ? s.entryPrice + r * tp1R : s.entryPrice - r * tp1R
+                s.tp2Price := s.dir == 1 ? s.entryPrice + r * tp2R : s.entryPrice - r * tp2R
+                s.tp3Price := s.dir == 1 ? s.entryPrice + r * tp3R : s.entryPrice - r * tp3R
 
-    if confirmation
-        entryPrice := close
-        buffer = slBufferATRMult * atrVal
-        slPrice := dir == 1 ? lockedLow - buffer : lockedHigh + buffer
-        r = math.abs(entryPrice - slPrice)
-        tp1Price := dir == 1 ? entryPrice + r * tp1R : entryPrice - r * tp1R
-        tp2Price := dir == 1 ? entryPrice + r * tp2R : entryPrice - r * tp2R
-        tp3Price := dir == 1 ? entryPrice + r * tp3R : entryPrice - r * tp3R
+                s.state := 3
+                entrySignal := true
+                if s.dir == 1
+                    isLongEntry := true
+                else
+                    isShortEntry := true
 
-        state := 3
-        entrySignal := true
-        isLongEntry := dir == 1
-        isShortEntry := dir == -1
-        if showTradeZone
-            riskTop = dir == 1 ? entryPrice : slPrice
-            riskBottom = dir == 1 ? slPrice : entryPrice
-            rewardTop = dir == 1 ? tp3Price : entryPrice
-            rewardBottom = dir == 1 ? entryPrice : tp3Price
-            riskBox := box.new(bar_index, riskTop, bar_index, riskBottom, border_color=na, bgcolor=color.new(dnCss, 75))
-            rewardBox := box.new(bar_index, rewardTop, bar_index, rewardBottom, border_color=na, bgcolor=color.new(upCss, 75))
-            entryLine := line.new(bar_index, entryPrice, bar_index, entryPrice, color=color.new(color.white, 20), style=line.style_solid)
-        alert("Sideway Breakout Bot: " + (dir == 1 ? "LONG" : "SHORT") + " entry signal", alert.freq_once_per_bar_close)
+                if showTradeZone
+                    riskTop = s.dir == 1 ? s.entryPrice : s.slPrice
+                    riskBottom = s.dir == 1 ? s.slPrice : s.entryPrice
+                    rewardTop = s.dir == 1 ? s.tp3Price : s.entryPrice
+                    rewardBottom = s.dir == 1 ? s.entryPrice : s.tp3Price
+                    s.riskBox := box.new(bar_index, riskTop, bar_index, riskBottom, border_color=na, bgcolor=color.new(dnCss, 75))
+                    s.rewardBox := box.new(bar_index, rewardTop, bar_index, rewardBottom, border_color=na, bgcolor=color.new(upCss, 75))
+                    s.entryLine := line.new(bar_index, s.entryPrice, bar_index, s.entryPrice, color=color.new(color.white, 20), style=line.style_solid)
 
-    else if invalidated or minutesSinceBreakout > retraceTimeoutMin
-        state := 0
-        lockedHigh := na
-        lockedLow := na
-        lockBar := na
-        dir := 0
-        breakoutTime := na
-        zoneHigh := na
-        zoneLow := na
-        zoneMid := na
-        touchedZone := false
-        slPrice := na
-        entryPrice := na
-        tp1Price := na
-        tp2Price := na
-        tp3Price := na
-        tp1Hit := false
-        tp2Hit := false
-        tp3Hit := false
+                    s.tp1Line := line.new(bar_index, s.tp1Price, bar_index, s.tp1Price, color=upCss, style=line.style_dashed, width=2)
+                    s.tp2Line := line.new(bar_index, s.tp2Price, bar_index, s.tp2Price, color=color.new(upCss, 30), style=line.style_dashed)
+                    s.tp3Line := line.new(bar_index, s.tp3Price, bar_index, s.tp3Price, color=color.new(upCss, 30), style=line.style_dashed)
+                    if showTPLabels
+                        s.tp1Lbl := label.new(bar_index, s.tp1Price, "TP1", style=label.style_circle, color=upCss, textcolor=color.white, size=size.normal)
+                        s.tp2Lbl := label.new(bar_index, s.tp2Price, "TP2", style=label.style_circle, color=upCss, textcolor=color.white, size=size.small)
+                        s.tp3Lbl := label.new(bar_index, s.tp3Price, "TP3", style=label.style_circle, color=upCss, textcolor=color.white, size=size.small)
+                alert("Sideway Breakout Bot: " + (s.dir == 1 ? "LONG" : "SHORT") + " entry signal", alert.freq_once_per_bar_close)
+
+            else if invalidated or minutesSinceBreakout > retraceTimeoutMin
+                removeThis := true
+
+        if removeThis
+            array.remove(setups, idx)
 
 // ───────────────────────────── Plots / signals ─────────────────────────────
 plotshape(isLongEntry, "Long Entry", shape.triangleup, location.belowbar, color.green, text="L", textcolor=color.white, size=size.small)
