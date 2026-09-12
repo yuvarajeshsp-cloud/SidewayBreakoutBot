@@ -1,0 +1,325 @@
+//@version=5
+strategy("Sideway Breakout Bot [Strategy]", overlay=true, initial_capital=10000, default_qty_type=strategy.fixed, default_qty_value=1, pyramiding=0, calc_on_every_tick=false)
+
+// ───────────────────────────── Inputs ─────────────────────────────
+grpRange = "Consolidation"
+lookback         = input.int(20, "Lookback Bars", minval=5, group=grpRange)
+rangeTightPct    = input.float(5.0, "Max Range Width %", minval=0.1, group=grpRange)
+useADXFilter     = input.bool(true, "Require Low ADX", group=grpRange)
+adxLength        = input.int(14, "ADX/DI Length", minval=1, group=grpRange)
+adxSmoothing     = input.int(14, "ADX Smoothing", minval=1, group=grpRange)
+adxThreshold     = input.float(20.0, "ADX Threshold", minval=1, group=grpRange)
+requireTouches   = input.bool(true, "Require Range Touches", group=grpRange)
+minTouches       = input.int(2, "Min Touches Each Side", minval=1, group=grpRange)
+touchTolPct      = input.float(10.0, "Touch Tolerance % of Range", minval=0, group=grpRange)
+maxBarsWatch     = input.int(50, "Max Bars to Wait for Breakout", minval=1, group=grpRange)
+
+grpBreak = "Breakout"
+atrLength        = input.int(14, "ATR Length", minval=1, group=grpBreak)
+useBodyFilter    = input.bool(false, "Require Min Body Size", group=grpBreak)
+bodyATRMult      = input.float(0.5, "Min Body Size (x ATR)", minval=0, group=grpBreak)
+
+grpZone = "Retracement Zone"
+zoneScanMaxBars  = input.int(15, "Zone Scan Lookback (bars)", minval=3, group=grpZone)
+fvgMinATRMult    = input.float(0.0, "Min FVG Size (x ATR)", minval=0, group=grpZone)
+maxBarsRetrace   = input.int(30, "Max Bars to Wait for Confirmation", minval=1, group=grpZone)
+
+grpRisk = "Risk Management"
+riskPercent      = input.float(1.0, "Risk % per Trade", minval=0.01, group=grpRisk)
+slBufferATRMult  = input.float(0.1, "SL Buffer (x ATR)", minval=0, group=grpRisk)
+
+grpTP = "Take Profit"
+tp1R = input.float(1.0, "TP1 (R multiple)", minval=0.1, group=grpTP)
+tp2R = input.float(2.0, "TP2 (R multiple)", minval=0.1, group=grpTP)
+tp3R = input.float(3.0, "TP3 (R multiple)", minval=0.1, group=grpTP)
+tp1Qty = input.float(33, "TP1 Close %", minval=1, maxval=100, group=grpTP)
+tp2Qty = input.float(33, "TP2 Close %", minval=1, maxval=100, group=grpTP)
+tp3Qty = input.float(34, "TP3 Close %", minval=1, maxval=100, group=grpTP)
+moveToBEAfterTP1 = input.bool(true, "Move SL to Breakeven after TP1", group=grpTP)
+
+grpVis = "Visuals"
+showRangeBox = input.bool(true, "Show Consolidation Box", group=grpVis)
+showZone     = input.bool(true, "Show Retracement Zone", group=grpVis)
+showLevels   = input.bool(true, "Show Entry/SL/TP Levels", group=grpVis)
+
+// ───────────────────────────── Core calcs ─────────────────────────────
+atrVal = ta.atr(atrLength)
+[diplus, diminus, adxVal] = ta.dmi(adxLength, adxSmoothing)
+
+rangeHigh = ta.highest(high, lookback)
+rangeLow  = ta.lowest(low, lookback)
+rangeWidthPct = (rangeHigh - rangeLow) / rangeLow * 100
+
+tolerance = (rangeHigh - rangeLow) * (touchTolPct / 100)
+var int highTouches = 0
+var int lowTouches  = 0
+highTouches := 0
+lowTouches  := 0
+for i = 0 to lookback - 1
+    if high[i] >= rangeHigh - tolerance
+        highTouches += 1
+    if low[i] <= rangeLow + tolerance
+        lowTouches += 1
+
+sidewaysCondition = rangeWidthPct <= rangeTightPct and
+     (not useADXFilter or adxVal < adxThreshold) and
+     (not requireTouches or (highTouches >= minTouches and lowTouches >= minTouches))
+
+// ───────────────────────────── State machine ─────────────────────────────
+// 0 = searching, 1 = locked/watching breakout, 2 = waiting for confirmation, 3 = in trade
+var int   state       = 0
+var float lockedHigh  = na
+var float lockedLow   = na
+var int   lockBar     = na
+var int   dir         = 0
+var int   breakoutBar = na
+var float zoneHigh    = na
+var float zoneLow     = na
+var float zoneMid     = na
+var bool  touchedZone = false
+var float slPrice     = na
+var float entryPrice  = na
+var float tp1Price    = na
+var float tp2Price    = na
+var float tp3Price    = na
+var bool  tp1Filled   = false
+var float qtyAtEntry  = na
+var box   rangeBox    = na
+var box   zoneBox     = na
+var line  slLine      = na
+var line  tp1Line     = na
+var line  tp2Line     = na
+var line  tp3Line     = na
+
+// ---- State 3: manage open trade / detect close ----
+if state == 3 and strategy.position_size == 0
+    if not na(zoneBox)
+        box.delete(zoneBox)
+    if not na(rangeBox)
+        box.delete(rangeBox)
+    state := 0
+    lockedHigh := na
+    lockedLow := na
+    lockBar := na
+    dir := 0
+    breakoutBar := na
+    zoneHigh := na
+    zoneLow := na
+    zoneMid := na
+    touchedZone := false
+    slPrice := na
+    entryPrice := na
+    tp1Price := na
+    tp2Price := na
+    tp3Price := na
+    tp1Filled := false
+    qtyAtEntry := na
+
+if state == 3 and strategy.position_size != 0
+    if na(qtyAtEntry)
+        qtyAtEntry := math.abs(strategy.position_size)
+    if not tp1Filled and math.abs(strategy.position_size) <= qtyAtEntry * (1 - tp1Qty / 100) + 1e-8
+        tp1Filled := true
+        alert("Sideway Breakout Bot: TP1 hit, SL moved to breakeven", alert.freq_once_per_bar_close)
+
+    currentStop = moveToBEAfterTP1 and tp1Filled ? entryPrice : slPrice
+    if dir == 1
+        strategy.exit("TP1", from_entry="Long", qty_percent=tp1Qty, limit=tp1Price, stop=currentStop)
+        strategy.exit("TP2", from_entry="Long", qty_percent=tp2Qty, limit=tp2Price, stop=currentStop)
+        strategy.exit("TP3", from_entry="Long", qty_percent=tp3Qty, limit=tp3Price, stop=currentStop)
+    else
+        strategy.exit("TP1", from_entry="Short", qty_percent=tp1Qty, limit=tp1Price, stop=currentStop)
+        strategy.exit("TP2", from_entry="Short", qty_percent=tp2Qty, limit=tp2Price, stop=currentStop)
+        strategy.exit("TP3", from_entry="Short", qty_percent=tp3Qty, limit=tp3Price, stop=currentStop)
+
+    if showLevels and not na(slLine)
+        line.set_y1(slLine, currentStop)
+        line.set_y2(slLine, currentStop)
+
+// ---- State 0: search for a fresh consolidation range ----
+if state == 0 and sidewaysCondition
+    lockedHigh := rangeHigh
+    lockedLow := rangeLow
+    lockBar := bar_index
+    state := 1
+    if showRangeBox
+        rangeBox := box.new(bar_index - lookback + 1, lockedHigh, bar_index, lockedLow, border_color=color.blue, bgcolor=color.new(color.blue, 90))
+    alert("Sideway Breakout Bot: consolidation range detected", alert.freq_once_per_bar_close)
+
+// ---- State 1: watch for full-body breakout ----
+if state == 1
+    if showRangeBox and not na(rangeBox)
+        box.set_right(rangeBox, bar_index)
+
+    bodySize = math.abs(close - open)
+    passesBody = not useBodyFilter or bodySize >= bodyATRMult * atrVal
+    bullBreak = low >= lockedLow and math.min(open, close) > lockedHigh and passesBody
+    bearBreak = high <= lockedHigh and math.max(open, close) < lockedLow and passesBody
+
+    if bullBreak or bearBreak
+        dir := bullBreak ? 1 : -1
+        breakoutBar := bar_index
+
+        scanLen = math.min(bar_index - lockBar, zoneScanMaxBars)
+        var float fZoneHigh = na
+        var float fZoneLow = na
+        fZoneHigh := na
+        fZoneLow := na
+        bool fvgFound = false
+        bool breakerFound = false
+
+        if scanLen >= 3
+            for i = 1 to scanLen - 2
+                if not fvgFound
+                    if dir == 1
+                        if low[i] > high[i + 2] and (low[i] - high[i + 2]) >= fvgMinATRMult * atrVal
+                            fZoneLow := high[i + 2]
+                            fZoneHigh := low[i]
+                            fvgFound := true
+                    else
+                        if high[i] < low[i + 2] and (high[i + 2] - high[i]) >= fvgMinATRMult * atrVal
+                            fZoneHigh := low[i + 2]
+                            fZoneLow := high[i]
+                            fvgFound := true
+                    if fvgFound
+                        break
+
+        if not fvgFound and scanLen >= 2
+            for i = 1 to scanLen - 1
+                if not breakerFound
+                    isOpposite = dir == 1 ? close[i] < open[i] : close[i] > open[i]
+                    if isOpposite
+                        fZoneHigh := high[i]
+                        fZoneLow := low[i]
+                        breakerFound := true
+                    if breakerFound
+                        break
+
+        if not fvgFound and not breakerFound
+            if dir == 1
+                fZoneLow := lockedHigh
+                fZoneHigh := ta.highest(high, math.max(scanLen, 1))
+            else
+                fZoneHigh := lockedLow
+                fZoneLow := ta.lowest(low, math.max(scanLen, 1))
+
+        zoneHigh := fZoneHigh
+        zoneLow := fZoneLow
+        zoneMid := (fZoneHigh + fZoneLow) / 2
+        touchedZone := false
+        state := 2
+
+        if showZone
+            zoneBox := box.new(bar_index, zoneHigh, bar_index, zoneLow, border_color=color.orange, bgcolor=color.new(color.orange, 85))
+        alert("Sideway Breakout Bot: " + (dir == 1 ? "bullish" : "bearish") + " breakout confirmed, zone identified", alert.freq_once_per_bar_close)
+
+    else if bar_index - lockBar > maxBarsWatch
+        if not na(rangeBox)
+            box.delete(rangeBox)
+        state := 0
+        lockedHigh := na
+        lockedLow := na
+        lockBar := na
+        dir := 0
+        breakoutBar := na
+        zoneHigh := na
+        zoneLow := na
+        zoneMid := na
+        touchedZone := false
+        slPrice := na
+        entryPrice := na
+        tp1Price := na
+        tp2Price := na
+        tp3Price := na
+        tp1Filled := false
+        qtyAtEntry := na
+
+// ---- State 2: wait for retracement + confirmation candle ----
+if state == 2
+    if showZone and not na(zoneBox)
+        box.set_right(zoneBox, bar_index)
+
+    touched = dir == 1 ? low <= zoneMid : high >= zoneMid
+    if touched
+        touchedZone := true
+
+    confirmBull = close > open and close > zoneMid
+    confirmBear = close < open and close < zoneMid
+    confirmation = touchedZone and (dir == 1 ? confirmBull : confirmBear)
+
+    invalidated = dir == 1 ? close < lockedLow : close > lockedHigh
+    barsSinceBreakout = bar_index - breakoutBar
+
+    if confirmation
+        entryPrice := close
+        buffer = slBufferATRMult * atrVal
+        slPrice := dir == 1 ? lockedLow - buffer : lockedHigh + buffer
+        r = math.abs(entryPrice - slPrice)
+        tp1Price := dir == 1 ? entryPrice + r * tp1R : entryPrice - r * tp1R
+        tp2Price := dir == 1 ? entryPrice + r * tp2R : entryPrice - r * tp2R
+        tp3Price := dir == 1 ? entryPrice + r * tp3R : entryPrice - r * tp3R
+
+        riskAmount = strategy.equity * (riskPercent / 100)
+        qtyToTrade = r > 0 ? riskAmount / (r * syminfo.pointvalue) : 0.0
+
+        if qtyToTrade > 0
+            if dir == 1
+                strategy.entry("Long", strategy.long, qty=qtyToTrade)
+            else
+                strategy.entry("Short", strategy.short, qty=qtyToTrade)
+            state := 3
+            if showLevels
+                slLine := line.new(bar_index, slPrice, bar_index + 1, slPrice, color=color.red, style=line.style_dashed, extend=extend.right)
+                tp1Line := line.new(bar_index, tp1Price, bar_index + 1, tp1Price, color=color.green, style=line.style_dotted, extend=extend.right)
+                tp2Line := line.new(bar_index, tp2Price, bar_index + 1, tp2Price, color=color.green, style=line.style_dotted, extend=extend.right)
+                tp3Line := line.new(bar_index, tp3Price, bar_index + 1, tp3Price, color=color.green, style=line.style_dotted, extend=extend.right)
+            alert("Sideway Breakout Bot: " + (dir == 1 ? "LONG" : "SHORT") + " entry triggered", alert.freq_once_per_bar_close)
+        else
+            if not na(zoneBox)
+                box.delete(zoneBox)
+            if not na(rangeBox)
+                box.delete(rangeBox)
+            state := 0
+            lockedHigh := na
+            lockedLow := na
+            lockBar := na
+            dir := 0
+            breakoutBar := na
+            zoneHigh := na
+            zoneLow := na
+            zoneMid := na
+            touchedZone := false
+            slPrice := na
+            entryPrice := na
+            tp1Price := na
+            tp2Price := na
+            tp3Price := na
+            tp1Filled := false
+            qtyAtEntry := na
+
+    else if invalidated or barsSinceBreakout > maxBarsRetrace
+        if not na(zoneBox)
+            box.delete(zoneBox)
+        if not na(rangeBox)
+            box.delete(rangeBox)
+        state := 0
+        lockedHigh := na
+        lockedLow := na
+        lockBar := na
+        dir := 0
+        breakoutBar := na
+        zoneHigh := na
+        zoneLow := na
+        zoneMid := na
+        touchedZone := false
+        slPrice := na
+        entryPrice := na
+        tp1Price := na
+        tp2Price := na
+        tp3Price := na
+        tp1Filled := false
+        qtyAtEntry := na
+
+// ───────────────────────────── Plots ─────────────────────────────
+plot(state == 1 ? lockedHigh : na, "Range High", color.new(color.blue, 0), 1)
+plot(state == 1 ? lockedLow : na, "Range Low", color.new(color.blue, 0), 1)
