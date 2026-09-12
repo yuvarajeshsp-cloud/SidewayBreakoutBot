@@ -278,7 +278,13 @@ if state == 4
         zoneHigh := zH
         zoneLow := zL
         zoneMid := (zH + zL) / 2
-        touchedZone := false
+        // The scanned leg spans the original breakout through this confirmation
+        // candle, so it can include a pullback that already reached the zone
+        // (e.g. the fakeout candle itself) -- seed touchedZone from that history
+        // instead of always starting at false, or a retest-then-continue move
+        // never gets recognized as a retracement.
+        scanLen2 = math.max(math.min(bar_index - lockBar, zoneScanMaxBars), 1)
+        touchedZone := dir == 1 ? ta.lowest(low, scanLen2) <= zoneMid : ta.highest(high, scanLen2) >= zoneMid
         state := 2
         if showZone
             zoneBox := box.new(bar_index, zoneHigh, bar_index, zoneLow, border_color=color.orange, bgcolor=color.new(color.orange, 85))
