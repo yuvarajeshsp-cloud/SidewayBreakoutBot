@@ -6,9 +6,9 @@ strategy("Sideway Breakout Bot [Strategy]", overlay=true, initial_capital=10000,
 
 // ───────────────────────────── Inputs ─────────────────────────────
 grpRange = "Range Detector"
-rangeLength = input.int(10, "Minimum Range Length", minval=2, group=grpRange)
-rangeMult   = input.float(1.5, "Range Width", minval=0, step=0.1, group=grpRange)
-rangeAtrLen = input.int(100, "Range ATR Length", minval=1, group=grpRange)
+rangeLength = input.int(20, "Minimum Range Length", minval=2, group=grpRange)
+rangeMult   = input.float(1.0, "Range Width", minval=0, step=0.1, group=grpRange)
+rangeAtrLen = input.int(500, "Range ATR Length", minval=1, group=grpRange)
 upCss       = input.color(#089981, "Broken Upward", group=grpRange)
 dnCss       = input.color(#f23645, "Broken Downward", group=grpRange)
 unbrokenCss = input.color(#2157f3, "Unbroken", group=grpRange)
