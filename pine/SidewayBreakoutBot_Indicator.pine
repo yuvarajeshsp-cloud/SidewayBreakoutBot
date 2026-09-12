@@ -15,9 +15,10 @@ unbrokenCss = input.color(#2157f3, "Unbroken", group=grpRange)
 maxBarsWatch = input.int(50, "Max Bars to Wait for Breakout", minval=1, group=grpRange)
 
 grpBreak = "Breakout"
-atrLength     = input.int(14, "ATR Length (SL/Filters)", minval=1, group=grpBreak)
-useBodyFilter = input.bool(false, "Require Min Body Size", group=grpBreak)
-bodyATRMult   = input.float(0.5, "Min Body Size (x ATR)", minval=0, group=grpBreak)
+atrLength        = input.int(14, "ATR Length (SL/Filters)", minval=1, group=grpBreak)
+useBodyFilter    = input.bool(false, "Require Min Body Size", group=grpBreak)
+bodyATRMult      = input.float(0.5, "Min Body Size (x ATR)", minval=0, group=grpBreak)
+useFakeoutFilter = input.bool(true, "Require Confirmation Candle After Breakout", group=grpBreak)
 
 grpZone = "Retracement Zone"
 zoneScanMaxBars = input.int(15, "Zone Scan Lookback (bars)", minval=3, group=grpZone)
@@ -91,8 +92,56 @@ plot(rMin, "Range Bottom", rMin != rMin[1] ? na : rOs == 0 ? unbrokenCss : rOs =
 // ───────────────────────────── Core calcs ─────────────────────────────
 atrVal = ta.atr(atrLength)
 
+// Scans the breakout leg for the nearest FVG, else a breaker candle, else falls
+// back to a leg retracement. Returns [zoneHigh, zoneLow]. Read-only over outer
+// state (lockBar, lockedHigh, lockedLow, atrVal) so it stays a plain function.
+f_findZone(d, lockBarArg, lockedHighArg, lockedLowArg) =>
+    scanLen = math.min(bar_index - lockBarArg, zoneScanMaxBars)
+    float fH = na
+    float fL = na
+    bool fvgFound = false
+    bool breakerFound = false
+
+    if scanLen >= 3
+        for i = 1 to scanLen - 2
+            if not fvgFound
+                if d == 1
+                    if low[i] > high[i + 2] and (low[i] - high[i + 2]) >= fvgMinATRMult * atrVal
+                        fL := high[i + 2]
+                        fH := low[i]
+                        fvgFound := true
+                else
+                    if high[i] < low[i + 2] and (high[i + 2] - high[i]) >= fvgMinATRMult * atrVal
+                        fH := low[i + 2]
+                        fL := high[i]
+                        fvgFound := true
+                if fvgFound
+                    break
+
+    if not fvgFound and scanLen >= 2
+        for i = 1 to scanLen - 1
+            if not breakerFound
+                isOpposite = d == 1 ? close[i] < open[i] : close[i] > open[i]
+                if isOpposite
+                    fH := high[i]
+                    fL := low[i]
+                    breakerFound := true
+                if breakerFound
+                    break
+
+    if not fvgFound and not breakerFound
+        if d == 1
+            fL := lockedHighArg
+            fH := ta.highest(high, math.max(scanLen, 1))
+        else
+            fH := lockedLowArg
+            fL := ta.lowest(low, math.max(scanLen, 1))
+
+    [fH, fL]
+
 // ───────────────────────────── State machine ─────────────────────────────
-// 0 = idle, 1 = range locked/watching breakout, 2 = waiting for confirmation, 3 = hypothetical open trade
+// 0 = idle, 1 = watching for breakout, 4 = awaiting confirmation candle (fakeout filter),
+// 2 = waiting for retracement confirmation, 3 = hypothetical open trade
 var int   state       = 0
 var float lockedHigh  = na
 var float lockedLow   = na
@@ -178,56 +227,17 @@ if state == 1
         dir := bullBreak ? 1 : -1
         breakoutBar := bar_index
 
-        scanLen = math.min(bar_index - lockBar, zoneScanMaxBars)
-        var float fZoneHigh = na
-        var float fZoneLow = na
-        fZoneHigh := na
-        fZoneLow := na
-        bool fvgFound = false
-        bool breakerFound = false
-
-        if scanLen >= 3
-            for i = 1 to scanLen - 2
-                if not fvgFound
-                    if dir == 1
-                        if low[i] > high[i + 2] and (low[i] - high[i + 2]) >= fvgMinATRMult * atrVal
-                            fZoneLow := high[i + 2]
-                            fZoneHigh := low[i]
-                            fvgFound := true
-                    else
-                        if high[i] < low[i + 2] and (high[i + 2] - high[i]) >= fvgMinATRMult * atrVal
-                            fZoneHigh := low[i + 2]
-                            fZoneLow := high[i]
-                            fvgFound := true
-                    if fvgFound
-                        break
-
-        if not fvgFound and scanLen >= 2
-            for i = 1 to scanLen - 1
-                if not breakerFound
-                    isOpposite = dir == 1 ? close[i] < open[i] : close[i] > open[i]
-                    if isOpposite
-                        fZoneHigh := high[i]
-                        fZoneLow := low[i]
-                        breakerFound := true
-                    if breakerFound
-                        break
-
-        if not fvgFound and not breakerFound
-            if dir == 1
-                fZoneLow := lockedHigh
-                fZoneHigh := ta.highest(high, math.max(scanLen, 1))
-            else
-                fZoneHigh := lockedLow
-                fZoneLow := ta.lowest(low, math.max(scanLen, 1))
-
-        zoneHigh := fZoneHigh
-        zoneLow := fZoneLow
-        zoneMid := (fZoneHigh + fZoneLow) / 2
-        touchedZone := false
-        state := 2
-
-        alert("Sideway Breakout Bot: " + (dir == 1 ? "bullish" : "bearish") + " breakout confirmed, zone identified", alert.freq_once_per_bar_close)
+        if useFakeoutFilter
+            state := 4
+            alert("Sideway Breakout Bot: " + (bullBreak ? "bullish" : "bearish") + " breakout, awaiting confirmation candle", alert.freq_once_per_bar_close)
+        else
+            [zH, zL] = f_findZone(dir, lockBar, lockedHigh, lockedLow)
+            zoneHigh := zH
+            zoneLow := zL
+            zoneMid := (zH + zL) / 2
+            touchedZone := false
+            state := 2
+            alert("Sideway Breakout Bot: " + (dir == 1 ? "bullish" : "bearish") + " breakout confirmed, zone identified", alert.freq_once_per_bar_close)
 
     else if bar_index - lockBar > maxBarsWatch
         state := 0
@@ -248,6 +258,28 @@ if state == 1
         tp1Hit := false
         tp2Hit := false
         tp3Hit := false
+
+// ---- State 4: require the next candle to close entirely away from the range
+// too (fakeout filter) before hunting for a retracement zone ----
+if state == 4
+    bodySize4 = math.abs(close - open)
+    passesBody4 = not useBodyFilter or bodySize4 >= bodyATRMult * atrVal
+    confirmed = dir == 1 ? math.min(open, close) > lockedHigh and passesBody4 : math.max(open, close) < lockedLow and passesBody4
+
+    if confirmed
+        breakoutBar := bar_index
+        [zH, zL] = f_findZone(dir, lockBar, lockedHigh, lockedLow)
+        zoneHigh := zH
+        zoneLow := zL
+        zoneMid := (zH + zL) / 2
+        touchedZone := false
+        state := 2
+        alert("Sideway Breakout Bot: " + (dir == 1 ? "bullish" : "bearish") + " breakout confirmed, zone identified", alert.freq_once_per_bar_close)
+    else
+        dir := 0
+        breakoutBar := na
+        state := 1
+        alert("Sideway Breakout Bot: breakout failed confirmation (fakeout), watching for a new breakout", alert.freq_once_per_bar_close)
 
 // ---- State 2: wait for retracement + confirmation candle ----
 if state == 2
