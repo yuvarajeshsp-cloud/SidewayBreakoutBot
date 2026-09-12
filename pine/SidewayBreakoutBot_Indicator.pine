@@ -21,9 +21,9 @@ bodyATRMult      = input.float(0.5, "Min Body Size (x ATR)", minval=0, group=grp
 useFakeoutFilter = input.bool(true, "Require Confirmation Candle After Breakout", group=grpBreak)
 
 grpZone = "Retracement Zone"
-zoneScanMaxBars = input.int(15, "Zone Scan Lookback (bars)", minval=3, group=grpZone)
-fvgMinATRMult   = input.float(0.0, "Min FVG Size (x ATR)", minval=0, group=grpZone)
-maxBarsRetrace  = input.int(30, "Max Bars to Wait for Confirmation", minval=1, group=grpZone)
+zoneScanMaxBars  = input.int(15, "Zone Scan Lookback (bars)", minval=3, group=grpZone)
+fvgMinATRMult    = input.float(0.0, "Min FVG Size (x ATR)", minval=0, group=grpZone)
+retraceTimeoutMin = input.int(30, "Retracement Timeout (minutes)", minval=1, group=grpZone)
 
 grpRisk = "Risk Management"
 slBufferATRMult = input.float(0.1, "SL Buffer (x ATR)", minval=0, group=grpRisk)
@@ -147,7 +147,7 @@ var float lockedHigh  = na
 var float lockedLow   = na
 var int   lockBar     = na
 var int   dir         = 0
-var int   breakoutBar = na
+var int   breakoutTime = na
 var float zoneHigh    = na
 var float zoneLow     = na
 var float zoneMid     = na
@@ -195,7 +195,7 @@ if state == 3
         lockedLow := na
         lockBar := na
         dir := 0
-        breakoutBar := na
+        breakoutTime := na
         zoneHigh := na
         zoneLow := na
         zoneMid := na
@@ -225,7 +225,7 @@ if state == 1
 
     if bullBreak or bearBreak
         dir := bullBreak ? 1 : -1
-        breakoutBar := bar_index
+        breakoutTime := time
 
         if useFakeoutFilter
             state := 4
@@ -245,7 +245,7 @@ if state == 1
         lockedLow := na
         lockBar := na
         dir := 0
-        breakoutBar := na
+        breakoutTime := na
         zoneHigh := na
         zoneLow := na
         zoneMid := na
@@ -267,7 +267,7 @@ if state == 4
     confirmed = dir == 1 ? math.min(open, close) > lockedHigh and passesBody4 : math.max(open, close) < lockedLow and passesBody4
 
     if confirmed
-        breakoutBar := bar_index
+        breakoutTime := time
         [zH, zL] = f_findZone(dir, lockBar, lockedHigh, lockedLow)
         zoneHigh := zH
         zoneLow := zL
@@ -277,7 +277,7 @@ if state == 4
         alert("Sideway Breakout Bot: " + (dir == 1 ? "bullish" : "bearish") + " breakout confirmed, zone identified", alert.freq_once_per_bar_close)
     else
         dir := 0
-        breakoutBar := na
+        breakoutTime := na
         state := 1
         alert("Sideway Breakout Bot: breakout failed confirmation (fakeout), watching for a new breakout", alert.freq_once_per_bar_close)
 
@@ -292,7 +292,7 @@ if state == 2
     confirmation = touchedZone and (dir == 1 ? confirmBull : confirmBear)
 
     invalidated = dir == 1 ? close < lockedLow : close > lockedHigh
-    barsSinceBreakout = bar_index - breakoutBar
+    minutesSinceBreakout = (time - breakoutTime) / 60000.0
 
     if confirmation
         entryPrice := close
@@ -317,13 +317,13 @@ if state == 2
             entryLine := line.new(bar_index, entryPrice, bar_index, entryPrice, color=color.new(color.white, 20), style=line.style_solid)
         alert("Sideway Breakout Bot: " + (dir == 1 ? "LONG" : "SHORT") + " entry signal", alert.freq_once_per_bar_close)
 
-    else if invalidated or barsSinceBreakout > maxBarsRetrace
+    else if invalidated or minutesSinceBreakout > retraceTimeoutMin
         state := 0
         lockedHigh := na
         lockedLow := na
         lockBar := na
         dir := 0
-        breakoutBar := na
+        breakoutTime := na
         zoneHigh := na
         zoneLow := na
         zoneMid := na
