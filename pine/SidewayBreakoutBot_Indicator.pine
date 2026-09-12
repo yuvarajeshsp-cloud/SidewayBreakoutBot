@@ -13,6 +13,7 @@ upCss       = input.color(#089981, "Broken Upward", group=grpRange)
 dnCss       = input.color(#f23645, "Broken Downward", group=grpRange)
 unbrokenCss = input.color(#2157f3, "Unbroken", group=grpRange)
 maxBarsWatch = input.int(50, "Max Bars to Wait for Breakout", minval=1, group=grpRange)
+allowStackedEntries = input.bool(true, "Allow Stacked Entries", group=grpRange)
 maxConcurrentSetups = input.int(3, "Max Concurrent Setups", minval=1, maxval=10, group=grpRange)
 
 grpBreak = "Breakout"
@@ -185,7 +186,8 @@ bool isLongEntry  = false
 bool isShortEntry = false
 
 // ---- Arm a new setup whenever the range detector (re)confirms a range ----
-if rangeEvent and array.size(setups) < maxConcurrentSetups
+canArmNewSetup = allowStackedEntries ? array.size(setups) < maxConcurrentSetups : array.size(setups) == 0
+if rangeEvent and canArmNewSetup
     array.push(setups, Setup.new(state=1, lockedHigh=rMax, lockedLow=rMin, lockBar=n, dir=0, breakoutTime=na,
          zoneHigh=na, zoneLow=na, zoneMid=na, touchedZone=false, slPrice=na, entryPrice=na,
          tp1Price=na, tp2Price=na, tp3Price=na, tp1Hit=false, tp2Hit=false, tp3Hit=false,
