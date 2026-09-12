@@ -33,7 +33,7 @@ tp2R = input.float(2.0, "TP2 (R multiple)", minval=0.1, group=grpTP)
 tp3R = input.float(3.0, "TP3 (R multiple)", minval=0.1, group=grpTP)
 
 grpVis = "Visuals"
-showLabels = input.bool(true, "Show Entry Labels", group=grpVis)
+showTradeZone = input.bool(true, "Show Risk/Reward Zone", group=grpVis)
 
 // ───────────────────────────── Range Detector (LuxAlgo) ─────────────────────────────
 var box   bx   = na
@@ -111,6 +111,10 @@ var float tp3Price    = na
 var bool  tp1Hit      = false
 var bool  tp2Hit      = false
 var bool  tp3Hit      = false
+var box   riskBox     = na
+var box   rewardBox   = na
+var line  entryLine   = na
+
 bool entrySignal = false
 bool exitSignal  = false
 bool isLongEntry = false
@@ -118,6 +122,11 @@ bool isShortEntry = false
 
 // ---- State 3: track hypothetical open trade for alerts, no real position ----
 if state == 3
+    if showTradeZone and not na(riskBox)
+        box.set_right(riskBox, bar_index)
+        box.set_right(rewardBox, bar_index)
+        line.set_x2(entryLine, bar_index)
+
     currentStop = tp1Hit ? entryPrice : slPrice
     stopHit = dir == 1 ? low <= currentStop : high >= currentStop
     if not tp1Hit and (dir == 1 ? high >= tp1Price : low <= tp1Price)
@@ -266,11 +275,14 @@ if state == 2
         entrySignal := true
         isLongEntry := dir == 1
         isShortEntry := dir == -1
-        if showLabels
-            if dir == 1
-                label.new(bar_index, low, "LONG", style=label.style_label_up, color=color.green, textcolor=color.white, yloc=yloc.belowbar)
-            else
-                label.new(bar_index, high, "SHORT", style=label.style_label_down, color=color.red, textcolor=color.white, yloc=yloc.abovebar)
+        if showTradeZone
+            riskTop = dir == 1 ? entryPrice : slPrice
+            riskBottom = dir == 1 ? slPrice : entryPrice
+            rewardTop = dir == 1 ? tp3Price : entryPrice
+            rewardBottom = dir == 1 ? entryPrice : tp3Price
+            riskBox := box.new(bar_index, riskTop, bar_index, riskBottom, border_color=na, bgcolor=color.new(dnCss, 75))
+            rewardBox := box.new(bar_index, rewardTop, bar_index, rewardBottom, border_color=na, bgcolor=color.new(upCss, 75))
+            entryLine := line.new(bar_index, entryPrice, bar_index, entryPrice, color=color.new(color.white, 20), style=line.style_solid)
         alert("Sideway Breakout Bot: " + (dir == 1 ? "LONG" : "SHORT") + " entry signal", alert.freq_once_per_bar_close)
 
     else if invalidated or barsSinceBreakout > maxBarsRetrace
@@ -294,8 +306,8 @@ if state == 2
         tp3Hit := false
 
 // ───────────────────────────── Plots / signals ─────────────────────────────
-plotshape(isLongEntry, "Long Entry", shape.triangleup, location.belowbar, color.green, size=size.small)
-plotshape(isShortEntry, "Short Entry", shape.triangledown, location.abovebar, color.red, size=size.small)
+plotshape(isLongEntry, "Long Entry", shape.triangleup, location.belowbar, color.green, text="L", textcolor=color.white, size=size.small)
+plotshape(isShortEntry, "Short Entry", shape.triangledown, location.abovebar, color.red, text="S", textcolor=color.white, size=size.small)
 plotshape(exitSignal, "Trade Closed", shape.xcross, location.abovebar, color.gray, size=size.tiny)
 
 alertcondition(isLongEntry, "Long Entry Signal", "Sideway Breakout Bot: LONG entry signal")
