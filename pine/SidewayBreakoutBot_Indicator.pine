@@ -30,6 +30,7 @@ grpRisk = "Risk Management"
 slBufferATRMult = input.float(0.1, "SL Buffer (x ATR)", minval=0, group=grpRisk)
 
 grpTP = "Take Profit"
+numTPs = input.int(3, "Number of Take Profits (1-3)", minval=1, maxval=3, group=grpTP)
 tp1R = input.float(1.0, "TP1 (R multiple)", minval=0.1, group=grpTP)
 tp2R = input.float(2.0, "TP2 (R multiple)", minval=0.1, group=grpTP)
 tp3R = input.float(3.0, "TP3 (R multiple)", minval=0.1, group=grpTP)
@@ -207,19 +208,21 @@ if numSetups > 0
                 line.set_x2(s.tp2Line, bar_index)
                 line.set_x2(s.tp3Line, bar_index)
 
-            stopNow = s.tp1Hit ? s.entryPrice : s.slPrice
+            stopNow = (numTPs >= 2 and s.tp1Hit) ? s.entryPrice : s.slPrice
             stopHit = s.dir == 1 ? low <= stopNow : high >= stopNow
+
             if not s.tp1Hit and (s.dir == 1 ? high >= s.tp1Price : low <= s.tp1Price)
                 s.tp1Hit := true
-                alert("Sideway Breakout Bot: TP1 hit, SL moved to breakeven", alert.freq_once_per_bar_close)
-            if s.tp1Hit and not s.tp2Hit and (s.dir == 1 ? high >= s.tp2Price : low <= s.tp2Price)
+                alert("Sideway Breakout Bot: TP1 hit" + (numTPs >= 2 ? ", SL moved to breakeven" : ", trade closed"), alert.freq_once_per_bar_close)
+            if numTPs >= 2 and s.tp1Hit and not s.tp2Hit and (s.dir == 1 ? high >= s.tp2Price : low <= s.tp2Price)
                 s.tp2Hit := true
-                alert("Sideway Breakout Bot: TP2 hit", alert.freq_once_per_bar_close)
-            if s.tp2Hit and not s.tp3Hit and (s.dir == 1 ? high >= s.tp3Price : low <= s.tp3Price)
+                alert("Sideway Breakout Bot: TP2 hit" + (numTPs == 2 ? ", trade closed" : ""), alert.freq_once_per_bar_close)
+            if numTPs >= 3 and s.tp2Hit and not s.tp3Hit and (s.dir == 1 ? high >= s.tp3Price : low <= s.tp3Price)
                 s.tp3Hit := true
                 alert("Sideway Breakout Bot: TP3 hit, trade closed", alert.freq_once_per_bar_close)
 
-            if stopHit or s.tp3Hit
+            finalTpHit = numTPs == 1 ? s.tp1Hit : numTPs == 2 ? s.tp2Hit : s.tp3Hit
+            if stopHit or finalTpHit
                 exitSignal := true
                 removeThis := true
 
@@ -300,21 +303,26 @@ if numSetups > 0
                     isShortEntry := true
 
                 if showTradeZone
+                    lastTpPrice = numTPs == 1 ? s.tp1Price : numTPs == 2 ? s.tp2Price : s.tp3Price
                     riskTop = s.dir == 1 ? s.entryPrice : s.slPrice
                     riskBottom = s.dir == 1 ? s.slPrice : s.entryPrice
-                    rewardTop = s.dir == 1 ? s.tp3Price : s.entryPrice
-                    rewardBottom = s.dir == 1 ? s.entryPrice : s.tp3Price
+                    rewardTop = s.dir == 1 ? lastTpPrice : s.entryPrice
+                    rewardBottom = s.dir == 1 ? s.entryPrice : lastTpPrice
                     s.riskBox := box.new(bar_index, riskTop, bar_index, riskBottom, border_color=na, bgcolor=color.new(dnCss, 75))
                     s.rewardBox := box.new(bar_index, rewardTop, bar_index, rewardBottom, border_color=na, bgcolor=color.new(upCss, 75))
                     s.entryLine := line.new(bar_index, s.entryPrice, bar_index, s.entryPrice, color=color.new(color.white, 20), style=line.style_solid)
 
                     s.tp1Line := line.new(bar_index, s.tp1Price, bar_index, s.tp1Price, color=upCss, style=line.style_dashed, width=2)
-                    s.tp2Line := line.new(bar_index, s.tp2Price, bar_index, s.tp2Price, color=color.new(upCss, 30), style=line.style_dashed)
-                    s.tp3Line := line.new(bar_index, s.tp3Price, bar_index, s.tp3Price, color=color.new(upCss, 30), style=line.style_dashed)
+                    if numTPs >= 2
+                        s.tp2Line := line.new(bar_index, s.tp2Price, bar_index, s.tp2Price, color=color.new(upCss, 30), style=line.style_dashed)
+                    if numTPs >= 3
+                        s.tp3Line := line.new(bar_index, s.tp3Price, bar_index, s.tp3Price, color=color.new(upCss, 30), style=line.style_dashed)
                     if showTPLabels
                         s.tp1Lbl := label.new(bar_index, s.tp1Price, "TP1", style=label.style_circle, color=upCss, textcolor=color.white, size=size.normal)
-                        s.tp2Lbl := label.new(bar_index, s.tp2Price, "TP2", style=label.style_circle, color=upCss, textcolor=color.white, size=size.small)
-                        s.tp3Lbl := label.new(bar_index, s.tp3Price, "TP3", style=label.style_circle, color=upCss, textcolor=color.white, size=size.small)
+                        if numTPs >= 2
+                            s.tp2Lbl := label.new(bar_index, s.tp2Price, "TP2", style=label.style_circle, color=upCss, textcolor=color.white, size=size.small)
+                        if numTPs >= 3
+                            s.tp3Lbl := label.new(bar_index, s.tp3Price, "TP3", style=label.style_circle, color=upCss, textcolor=color.white, size=size.small)
                 alert("Sideway Breakout Bot: " + (s.dir == 1 ? "LONG" : "SHORT") + " entry signal", alert.freq_once_per_bar_close)
 
             else if invalidated or minutesSinceBreakout > retraceTimeoutMin
