@@ -45,6 +45,7 @@ sessionTz = input.string("Asia/Kolkata", "Session Timezone", group=grpSession)  
 
 grpVis = "Visuals"
 showTradeZone = input.bool(true, "Show Risk/Reward Zone", group=grpVis)                     // draw the red (risk) / green (reward) boxes and TP lines for each trade
+zoneTransparency = input.int(30, "Risk/Reward Zone Transparency", minval=0, maxval=100, group=grpVis) // 0 = solid fill, 100 = invisible -- lower this for a more solid look, closer to TradingView's built-in Long/Short Position tool
 showTPLabels  = input.bool(true, "Show TP1/TP2/TP3 Labels", group=grpVis)                   // draw the small dot + text label at each active TP level
 
 // ───────────────────────────── Range Detector (LuxAlgo) ─────────────────────────────
@@ -415,8 +416,8 @@ if numSetups > 0
                     riskBottom = s.dir == 1 ? s.slPrice : s.entryPrice
                     rewardTop = s.dir == 1 ? lastTpPrice : s.entryPrice
                     rewardBottom = s.dir == 1 ? s.entryPrice : lastTpPrice
-                    s.riskBox := box.new(bar_index, riskTop, bar_index, riskBottom, border_color=na, bgcolor=color.new(dnCss, 75))
-                    s.rewardBox := box.new(bar_index, rewardTop, bar_index, rewardBottom, border_color=na, bgcolor=color.new(upCss, 75))
+                    s.riskBox := box.new(bar_index, riskTop, bar_index, riskBottom, border_color=na, bgcolor=color.new(dnCss, zoneTransparency))
+                    s.rewardBox := box.new(bar_index, rewardTop, bar_index, rewardBottom, border_color=na, bgcolor=color.new(upCss, zoneTransparency))
                     s.entryLine := line.new(bar_index, s.entryPrice, bar_index, s.entryPrice, color=color.new(color.white, 20), style=line.style_solid)
 
                     // TP1's line is drawn slightly wider than TP2/TP3's for emphasis.

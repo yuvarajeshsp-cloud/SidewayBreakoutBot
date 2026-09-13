@@ -63,6 +63,7 @@ grpVis = "Visuals"
 showZone      = input.bool(true, "Show Retracement Zone", group=grpVis)                     // draw the orange box marking the FVG/range retracement zone while waiting for entry
 showLevels    = input.bool(true, "Show Entry/SL/TP Levels", group=grpVis)                    // draw the SL/TP lines once a trade is open
 showTPLabels  = input.bool(true, "Show TP1/TP2/TP3 Labels", group=grpVis)                    // draw the small dot + text label at each active TP level
+zoneTransparency = input.int(30, "Risk/Reward Zone Transparency", minval=0, maxval=100, group=grpVis) // 0 = solid fill, 100 = invisible -- lower this for a more solid look, closer to TradingView's built-in Long/Short Position tool
 
 // ───────────────────────────── Range Detector (LuxAlgo) ─────────────────────────────
 // This whole block just decides: is price currently "sideways"? It draws one evolving
@@ -211,6 +212,8 @@ type Setup
     float  qtyAtEntry    // position size at entry, used to detect partial fills later
     string entryId       // this setup's unique strategy.entry() id (e.g. "Long_3")
     box    zoneBox       // orange box marking the retracement zone while waiting for entry
+    box    riskBox       // red box from entry to SL, drawn while the trade is open
+    box    rewardBox     // green box from entry to the last active TP
     line   slLine        // SL line, drawn once the trade is open
     line   tp1Line
     line   tp2Line
@@ -234,7 +237,7 @@ if rangeEvent and canArmNewSetup
     array.push(setups, Setup.new(state=1, lockedHigh=rMax, lockedLow=rMin, lockBar=n, dir=0, breakoutTime=na,
          zoneHigh=na, zoneLow=na, zoneMid=na, touchedZone=false, slPrice=na, entryPrice=na,
          tp1Price=na, tp2Price=na, tp3Price=na, tp1Filled=false, qtyAtEntry=na, entryId=na,
-         zoneBox=na, slLine=na, tp1Line=na, tp2Line=na, tp3Line=na, tp1Lbl=na, tp2Lbl=na, tp3Lbl=na,
+         zoneBox=na, riskBox=na, rewardBox=na, slLine=na, tp1Line=na, tp2Line=na, tp3Line=na, tp1Lbl=na, tp2Lbl=na, tp3Lbl=na,
          stopWasHit=false, flipsUsed=0, entryBar=na, leftEntry=false))
 
 // ---- Advance every active setup, one state-step per bar ----
@@ -273,7 +276,7 @@ if numSetups > 0
                     array.push(setups, Setup.new(state=1, lockedHigh=s.lockedHigh, lockedLow=s.lockedLow, lockBar=bar_index, dir=0, breakoutTime=na,
                          zoneHigh=na, zoneLow=na, zoneMid=na, touchedZone=false, slPrice=na, entryPrice=na,
                          tp1Price=na, tp2Price=na, tp3Price=na, tp1Filled=false, qtyAtEntry=na, entryId=na,
-                         zoneBox=na, slLine=na, tp1Line=na, tp2Line=na, tp3Line=na, tp1Lbl=na, tp2Lbl=na, tp3Lbl=na,
+                         zoneBox=na, riskBox=na, rewardBox=na, slLine=na, tp1Line=na, tp2Line=na, tp3Line=na, tp1Lbl=na, tp2Lbl=na, tp3Lbl=na,
                          stopWasHit=false, flipsUsed=s.flipsUsed + 1, entryBar=na, leftEntry=false))
                     alert("Sideway Breakout Bot: SL hit, watching the same range for an opposite breakout", alert.freq_once_per_bar_close)
                 removeThis := true
@@ -328,6 +331,8 @@ if numSetups > 0
                     line.set_x2(s.tp1Line, bar_index + 1)
                     line.set_x2(s.tp2Line, bar_index + 1)
                     line.set_x2(s.tp3Line, bar_index + 1)
+                    box.set_right(s.riskBox, bar_index)
+                    box.set_right(s.rewardBox, bar_index)
 
         // ============================================================
         // STATE 1 -- watching the locked range for a full-body breakout
@@ -454,6 +459,17 @@ if numSetups > 0
                     s.state := 3
                     s.entryBar := bar_index
                     if showLevels
+                        // Filled red (risk) / green (reward) boxes, like TradingView's
+                        // built-in Long/Short Position tool -- reward extends only to
+                        // whichever TP is the last one actually enabled (numTPs).
+                        lastTpPrice = numTPs == 1 ? s.tp1Price : numTPs == 2 ? s.tp2Price : s.tp3Price
+                        riskTop = s.dir == 1 ? s.entryPrice : s.slPrice
+                        riskBottom = s.dir == 1 ? s.slPrice : s.entryPrice
+                        rewardTop = s.dir == 1 ? lastTpPrice : s.entryPrice
+                        rewardBottom = s.dir == 1 ? s.entryPrice : lastTpPrice
+                        s.riskBox := box.new(bar_index, riskTop, bar_index, riskBottom, border_color=na, bgcolor=color.new(dnCss, zoneTransparency))
+                        s.rewardBox := box.new(bar_index, rewardTop, bar_index, rewardBottom, border_color=na, bgcolor=color.new(upCss, zoneTransparency))
+
                         s.slLine := line.new(bar_index, s.slPrice, bar_index + 1, s.slPrice, color=color.red, style=line.style_dashed, extend=extend.none)
                         // TP1's line is drawn slightly wider than TP2/TP3's for emphasis.
                         s.tp1Line := line.new(bar_index, s.tp1Price, bar_index + 1, s.tp1Price, color=upCss, style=line.style_dotted, width=2)
