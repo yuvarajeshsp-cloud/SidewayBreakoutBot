@@ -287,6 +287,14 @@ if numSetups > 0
                 if numTPs >= 3
                     strategy.exit("TP3_" + s.entryId, from_entry=s.entryId, qty_percent=tp3Pct, limit=s.tp3Price, stop=currentStop)
 
+                // Flip each TP's dot label from blue to green once price actually reaches it.
+                if s.dir == 1 ? high >= s.tp1Price : low <= s.tp1Price
+                    label.set_color(s.tp1Lbl, upCss)
+                if numTPs >= 2 and (s.dir == 1 ? high >= s.tp2Price : low <= s.tp2Price)
+                    label.set_color(s.tp2Lbl, upCss)
+                if numTPs >= 3 and (s.dir == 1 ? high >= s.tp3Price : low <= s.tp3Price)
+                    label.set_color(s.tp3Lbl, upCss)
+
                 // Remember (sticky) if price has crossed the stop level, so that once the
                 // position actually closes we know it was via the stop, not a TP -- this
                 // is what triggers the flip above, since a closed trade alone can't say
@@ -435,19 +443,21 @@ if numSetups > 0
                     s.entryBar := bar_index
                     if showLevels
                         s.slLine := line.new(bar_index, s.slPrice, bar_index + 1, s.slPrice, color=color.red, style=line.style_dashed, extend=extend.none)
-                        // TP1 line is drawn slightly bolder/wider -- Pine labels have no
-                        // true bold text, so a larger size + width is the closest emphasis.
+                        // TP1's line is drawn slightly wider than TP2/TP3's for emphasis.
                         s.tp1Line := line.new(bar_index, s.tp1Price, bar_index + 1, s.tp1Price, color=upCss, style=line.style_dotted, width=2)
                         if numTPs >= 2
                             s.tp2Line := line.new(bar_index, s.tp2Price, bar_index + 1, s.tp2Price, color=color.new(upCss, 30), style=line.style_dotted)
                         if numTPs >= 3
                             s.tp3Line := line.new(bar_index, s.tp3Price, bar_index + 1, s.tp3Price, color=color.new(upCss, 30), style=line.style_dotted)
                         if showTPLabels
-                            s.tp1Lbl := label.new(bar_index, s.tp1Price, "TP1", style=label.style_circle, color=upCss, textcolor=color.white, size=size.normal)
+                            // Small dots (matching the sideways-range dot styling), blue
+                            // until that level is actually hit -- see the price checks
+                            // above, in the STATE 3 block, that flip each one to green.
+                            s.tp1Lbl := label.new(bar_index, s.tp1Price, "TP1", style=label.style_circle, color=unbrokenCss, textcolor=color.white, size=size.tiny)
                             if numTPs >= 2
-                                s.tp2Lbl := label.new(bar_index, s.tp2Price, "TP2", style=label.style_circle, color=upCss, textcolor=color.white, size=size.small)
+                                s.tp2Lbl := label.new(bar_index, s.tp2Price, "TP2", style=label.style_circle, color=unbrokenCss, textcolor=color.white, size=size.tiny)
                             if numTPs >= 3
-                                s.tp3Lbl := label.new(bar_index, s.tp3Price, "TP3", style=label.style_circle, color=upCss, textcolor=color.white, size=size.small)
+                                s.tp3Lbl := label.new(bar_index, s.tp3Price, "TP3", style=label.style_circle, color=unbrokenCss, textcolor=color.white, size=size.tiny)
                     alert("Sideway Breakout Bot: " + (s.dir == 1 ? "LONG" : "SHORT") + " entry triggered", alert.freq_once_per_bar_close)
                 else
                     // Degenerate case (e.g. zero risk distance) -- can't size a trade, drop it.

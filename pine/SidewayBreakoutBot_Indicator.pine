@@ -245,14 +245,18 @@ if numSetups > 0
             stopHit = s.dir == 1 ? low <= stopNow : high >= stopNow
 
             // Check each TP in order; TP2 can only fire after TP1, TP3 only after TP2.
+            // Each hit also flips that TP's dot label from blue to green.
             if not s.tp1Hit and (s.dir == 1 ? high >= s.tp1Price : low <= s.tp1Price)
                 s.tp1Hit := true
+                label.set_color(s.tp1Lbl, upCss)
                 alert("Sideway Breakout Bot: TP1 hit" + (numTPs >= 2 ? ", SL moved to breakeven" : ", trade closed"), alert.freq_once_per_bar_close)
             if numTPs >= 2 and s.tp1Hit and not s.tp2Hit and (s.dir == 1 ? high >= s.tp2Price : low <= s.tp2Price)
                 s.tp2Hit := true
+                label.set_color(s.tp2Lbl, upCss)
                 alert("Sideway Breakout Bot: TP2 hit" + (numTPs == 2 ? ", trade closed" : ""), alert.freq_once_per_bar_close)
             if numTPs >= 3 and s.tp2Hit and not s.tp3Hit and (s.dir == 1 ? high >= s.tp3Price : low <= s.tp3Price)
                 s.tp3Hit := true
+                label.set_color(s.tp3Lbl, upCss)
                 alert("Sideway Breakout Bot: TP3 hit, trade closed", alert.freq_once_per_bar_close)
 
             // Stagnation tracking: once price has EVER traded past entryPrice in the
@@ -403,19 +407,21 @@ if numSetups > 0
                     s.rewardBox := box.new(bar_index, rewardTop, bar_index, rewardBottom, border_color=na, bgcolor=color.new(upCss, 75))
                     s.entryLine := line.new(bar_index, s.entryPrice, bar_index, s.entryPrice, color=color.new(color.white, 20), style=line.style_solid)
 
-                    // TP1 line is drawn slightly bolder/wider -- Pine labels have no true
-                    // bold text, so a larger size + width is the closest visual emphasis.
+                    // TP1's line is drawn slightly wider than TP2/TP3's for emphasis.
                     s.tp1Line := line.new(bar_index, s.tp1Price, bar_index, s.tp1Price, color=upCss, style=line.style_dashed, width=2)
                     if numTPs >= 2
                         s.tp2Line := line.new(bar_index, s.tp2Price, bar_index, s.tp2Price, color=color.new(upCss, 30), style=line.style_dashed)
                     if numTPs >= 3
                         s.tp3Line := line.new(bar_index, s.tp3Price, bar_index, s.tp3Price, color=color.new(upCss, 30), style=line.style_dashed)
                     if showTPLabels
-                        s.tp1Lbl := label.new(bar_index, s.tp1Price, "TP1", style=label.style_circle, color=upCss, textcolor=color.white, size=size.normal)
+                        // Small dots (matching the sideways-range dot styling), blue
+                        // until that level is actually hit -- see the STATE 3 block
+                        // above, where each label flips to green on its own TP hit.
+                        s.tp1Lbl := label.new(bar_index, s.tp1Price, "TP1", style=label.style_circle, color=unbrokenCss, textcolor=color.white, size=size.tiny)
                         if numTPs >= 2
-                            s.tp2Lbl := label.new(bar_index, s.tp2Price, "TP2", style=label.style_circle, color=upCss, textcolor=color.white, size=size.small)
+                            s.tp2Lbl := label.new(bar_index, s.tp2Price, "TP2", style=label.style_circle, color=unbrokenCss, textcolor=color.white, size=size.tiny)
                         if numTPs >= 3
-                            s.tp3Lbl := label.new(bar_index, s.tp3Price, "TP3", style=label.style_circle, color=upCss, textcolor=color.white, size=size.small)
+                            s.tp3Lbl := label.new(bar_index, s.tp3Price, "TP3", style=label.style_circle, color=unbrokenCss, textcolor=color.white, size=size.tiny)
                 alert("Sideway Breakout Bot: " + (s.dir == 1 ? "LONG" : "SHORT") + " entry signal", alert.freq_once_per_bar_close)
 
             else if invalidated or minutesSinceBreakout > retraceTimeoutMin
