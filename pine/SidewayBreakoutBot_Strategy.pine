@@ -54,6 +54,11 @@ tp1Pct = numTPs == 1 ? 100.0 : tp1Qty
 tp2Pct = numTPs == 2 ? 100.0 - tp1Qty : tp2Qty
 tp3Pct = tp3Qty
 
+grpSession = "Trading Session"
+useSessionFilter = input.bool(true, "Restrict Entries to Session", group=grpSession)         // range detection, breakout watching, and retracement waiting all still run 24/7 -- this only gates the final entry
+sessionWindow = input.session("1000-2200", "Session", group=grpSession)                      // 24-hour "HHMM-HHMM" -- default is 10:00 AM to 10:00 PM
+sessionTz = input.string("Asia/Kolkata", "Session Timezone", group=grpSession)                // IANA timezone name the session above is interpreted in (default IST)
+
 grpVis = "Visuals"
 showZone      = input.bool(true, "Show Retracement Zone", group=grpVis)                     // draw the orange box marking the FVG/range retracement zone while waiting for entry
 showLevels    = input.bool(true, "Show Entry/SL/TP Levels", group=grpVis)                    // draw the SL/TP lines once a trade is open
@@ -127,6 +132,10 @@ plot(rMin, "Range Bottom", rMin != rMin[1] ? na : rOs == 0 ? unbrokenCss : rOs =
 
 // ───────────────────────────── Core calcs ─────────────────────────────
 atrVal = ta.atr(atrLength)
+
+// time(...) returns this bar's timestamp if it falls inside sessionWindow (in sessionTz),
+// or na otherwise -- the standard Pine idiom for a session filter.
+inSession = not useSessionFilter or not na(time(timeframe.period, sessionWindow, sessionTz))
 
 // Scans the breakout leg for the nearest FVG; if none is found, falls back to
 // a retracement touch of the sideways zone itself (its high/low). Returns
@@ -410,8 +419,11 @@ if numSetups > 0
             invalidated = s.dir == 1 ? close < s.lockedLow : close > s.lockedHigh
             minutesSinceBreakout = (time - s.breakoutTime) / 60000.0   // wall-clock time, not bar count, so the timeout means the same thing on any chart timeframe
 
-            if confirmation
+            if confirmation and inSession
                 // ---- Entry! Compute SL/TP levels and size the position. ----
+                // (A confirmation outside the session window just doesn't enter -- the
+                // setup stays in state 2 and can still enter later if price re-confirms,
+                // or gets invalidated/timed out normally below in the meantime.)
                 s.entryPrice := close
                 buffer = slBufferATRMult * atrVal
                 // SL sits beyond the OPPOSITE boundary of the original range (i.e. the
