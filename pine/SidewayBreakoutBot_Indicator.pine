@@ -45,8 +45,6 @@ sessionTz = input.string("Asia/Kolkata", "Session Timezone", group=grpSession)  
 
 grpVis = "Visuals"
 showTradeZone = input.bool(true, "Show Risk/Reward Zone", group=grpVis)                     // draw the red (risk) / green (reward) boxes and TP lines for each trade
-zoneTransparency = input.int(75, "Risk/Reward Zone Transparency (resting)", minval=0, maxval=100, group=grpVis) // fill while price has made no progress toward SL/TP yet -- 0 = solid, 100 = invisible
-minZoneTransparency = input.int(5, "Risk/Reward Zone Transparency (at SL/TP)", minval=0, maxval=100, group=grpVis) // fill once price actually reaches the SL or current TP target -- the two zones fill in solid as price approaches either level
 showTPLabels  = input.bool(true, "Show TP1/TP2/TP3 Labels", group=grpVis)                   // draw the small dot + text label at each active TP level
 
 // ───────────────────────────── Range Detector (LuxAlgo) ─────────────────────────────
@@ -270,18 +268,6 @@ if numSetups > 0
                 label.set_color(s.tp3Lbl, upCss)
                 alert("Sideway Breakout Bot: TP3 hit, trade closed", alert.freq_once_per_bar_close)
 
-            // Fill the boxes in progressively as price approaches either side: faint
-            // (zoneTransparency) with no progress, solid (minZoneTransparency) once that
-            // side's level is actually reached. "Next TP" = whichever tier hasn't hit yet.
-            if showTradeZone and not na(s.riskBox)
-                nextTpPrice = s.tp1Hit ? (s.tp2Hit ? s.tp3Price : s.tp2Price) : s.tp1Price
-                rewardProgress = math.max(0.0, math.min(1.0, s.dir == 1 ? (close - s.entryPrice) / (nextTpPrice - s.entryPrice) : (s.entryPrice - close) / (s.entryPrice - nextTpPrice)))
-                riskProgress = math.max(0.0, math.min(1.0, s.dir == 1 ? (s.entryPrice - close) / (s.entryPrice - stopNow) : (close - s.entryPrice) / (stopNow - s.entryPrice)))
-                rewardTrans = math.round(zoneTransparency - rewardProgress * (zoneTransparency - minZoneTransparency))
-                riskTrans = math.round(zoneTransparency - riskProgress * (zoneTransparency - minZoneTransparency))
-                box.set_bgcolor(s.rewardBox, color.new(upCss, int(rewardTrans)))
-                box.set_bgcolor(s.riskBox, color.new(dnCss, int(riskTrans)))
-
             // Stagnation tracking: once price has EVER traded past entryPrice in the
             // trade's favor, `leftEntry` stays true forever (the trade "worked" at least
             // a little). If that never happens within `stagnationBars`, flag it stagnant.
@@ -429,8 +415,8 @@ if numSetups > 0
                     riskBottom = s.dir == 1 ? s.slPrice : s.entryPrice
                     rewardTop = s.dir == 1 ? lastTpPrice : s.entryPrice
                     rewardBottom = s.dir == 1 ? s.entryPrice : lastTpPrice
-                    s.riskBox := box.new(bar_index, riskTop, bar_index, riskBottom, border_color=na, bgcolor=color.new(dnCss, zoneTransparency))
-                    s.rewardBox := box.new(bar_index, rewardTop, bar_index, rewardBottom, border_color=na, bgcolor=color.new(upCss, zoneTransparency))
+                    s.riskBox := box.new(bar_index, riskTop, bar_index, riskBottom, border_color=na, bgcolor=color.new(dnCss, 75))
+                    s.rewardBox := box.new(bar_index, rewardTop, bar_index, rewardBottom, border_color=na, bgcolor=color.new(upCss, 75))
                     s.entryLine := line.new(bar_index, s.entryPrice, bar_index, s.entryPrice, color=color.new(color.white, 20), style=line.style_solid)
 
                     // TP1's line is drawn slightly wider than TP2/TP3's for emphasis.
