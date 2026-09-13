@@ -6,54 +6,62 @@ indicator("Sideway Breakout Bot [Indicator]", overlay=true, max_boxes_count=500,
 
 // ───────────────────────────── Inputs ─────────────────────────────
 grpRange = "Range Detector"
-rangeLength = input.int(20, "Minimum Range Length", minval=2, group=grpRange)
-rangeMult   = input.float(1.0, "Range Width", minval=0, step=0.1, group=grpRange)
-rangeAtrLen = input.int(500, "Range ATR Length", minval=1, group=grpRange)
-upCss       = input.color(#089981, "Broken Upward", group=grpRange)
-dnCss       = input.color(#f23645, "Broken Downward", group=grpRange)
-unbrokenCss = input.color(#2157f3, "Unbroken", group=grpRange)
-maxBarsWatch = input.int(50, "Max Bars to Wait for Breakout", minval=1, group=grpRange)
-allowStackedEntries = input.bool(true, "Allow Stacked Entries", group=grpRange)
-maxConcurrentSetups = input.int(3, "Max Concurrent Setups", minval=1, maxval=10, group=grpRange)
-maxSlFlips = input.int(1, "Max SL Flips per Range", minval=0, maxval=5, group=grpRange)
+rangeLength = input.int(20, "Minimum Range Length", minval=2, group=grpRange)              // how many bars must stay inside the ATR band before a "sideways" range is recognized
+rangeMult   = input.float(1.0, "Range Width", minval=0, step=0.1, group=grpRange)          // multiplies the ATR band below -- bigger = tolerates more noise as still "sideways"
+rangeAtrLen = input.int(500, "Range ATR Length", minval=1, group=grpRange)                 // ATR length used only for sizing the range band (separate from the SL/filter ATR below)
+upCss       = input.color(#089981, "Broken Upward", group=grpRange)                        // range box/line color once price closes above it
+dnCss       = input.color(#f23645, "Broken Downward", group=grpRange)                      // range box/line color once price closes below it
+unbrokenCss = input.color(#2157f3, "Unbroken", group=grpRange)                             // range box/line color while still intact
+maxBarsWatch = input.int(50, "Max Bars to Wait for Breakout", minval=1, group=grpRange)     // give up watching a locked range if no breakout happens within this many bars
+allowStackedEntries = input.bool(true, "Allow Stacked Entries", group=grpRange)             // false = force exactly one setup at a time, overriding the count below
+maxConcurrentSetups = input.int(3, "Max Concurrent Setups", minval=1, maxval=10, group=grpRange) // cap on how many setups (watching or in-trade) can run at once when stacking is allowed
+maxSlFlips = input.int(1, "Max SL Flips per Range", minval=0, maxval=5, group=grpRange)     // after a stop-loss, how many times the SAME range may be re-watched for the opposite breakout (0 = never)
 
 grpBreak = "Breakout"
-atrLength        = input.int(14, "ATR Length (SL/Filters)", minval=1, group=grpBreak)
-useBodyFilter    = input.bool(false, "Require Min Body Size", group=grpBreak)
-bodyATRMult      = input.float(0.5, "Min Body Size (x ATR)", minval=0, group=grpBreak)
-useFakeoutFilter = input.bool(true, "Require Confirmation Candle After Breakout", group=grpBreak)
+atrLength        = input.int(14, "ATR Length (SL/Filters)", minval=1, group=grpBreak)       // ATR used for the SL buffer and the body-size filter (not the range band above)
+useBodyFilter    = input.bool(false, "Require Min Body Size", group=grpBreak)               // optional extra filter: reject small/indecisive breakout candles
+bodyATRMult      = input.float(0.5, "Min Body Size (x ATR)", minval=0, group=grpBreak)      // how big (in ATR) a candle's body must be to count, when the filter above is on
+useFakeoutFilter = input.bool(true, "Require Confirmation Candle After Breakout", group=grpBreak) // require a 2nd candle to also clear the range before trusting the breakout
 
 grpZone = "Retracement Zone"
-zoneScanMaxBars  = input.int(15, "Zone Scan Lookback (bars)", minval=3, group=grpZone)
-fvgMinATRMult    = input.float(0.0, "Min FVG Size (x ATR)", minval=0, group=grpZone)
-retraceTimeoutMin = input.int(30, "Retracement Timeout (minutes)", minval=1, group=grpZone)
+zoneScanMaxBars  = input.int(15, "Zone Scan Lookback (bars)", minval=3, group=grpZone)       // how far back (from the breakout) to search for a Fair Value Gap
+fvgMinATRMult    = input.float(0.0, "Min FVG Size (x ATR)", minval=0, group=grpZone)         // ignore FVGs smaller than this (in ATR) as noise
+retraceTimeoutMin = input.int(30, "Retracement Timeout (minutes)", minval=1, group=grpZone)  // give up waiting for the retracement/entry after this many real minutes
 
 grpRisk = "Risk Management"
-slBufferATRMult = input.float(0.1, "SL Buffer (x ATR)", minval=0, group=grpRisk)
-stagnationBars = input.int(30, "Close Stagnant Trade After (bars, 0=off)", minval=0, group=grpRisk)
+slBufferATRMult = input.float(0.1, "SL Buffer (x ATR)", minval=0, group=grpRisk)             // extra cushion (in ATR) added beyond the opposite range boundary for the stop-loss
+stagnationBars = input.int(30, "Close Stagnant Trade After (bars, 0=off)", minval=0, group=grpRisk) // close a trade early if price never moves in its favor for this many bars (0 = off)
 
 grpTP = "Take Profit"
-numTPs = input.int(3, "Number of Take Profits (1-3)", minval=1, maxval=3, group=grpTP)
-tp1R = input.float(1.0, "TP1 (R multiple)", minval=0.1, group=grpTP)
+numTPs = input.int(3, "Number of Take Profits (1-3)", minval=1, maxval=3, group=grpTP)      // how many of TP1/TP2/TP3 are actually used
+tp1R = input.float(1.0, "TP1 (R multiple)", minval=0.1, group=grpTP)                        // TP1 distance, expressed as a multiple of the stop-loss distance ("R")
 tp2R = input.float(2.0, "TP2 (R multiple)", minval=0.1, group=grpTP)
 tp3R = input.float(3.0, "TP3 (R multiple)", minval=0.1, group=grpTP)
 
 grpVis = "Visuals"
-showTradeZone = input.bool(true, "Show Risk/Reward Zone", group=grpVis)
-showTPLabels  = input.bool(true, "Show TP1/TP2/TP3 Labels", group=grpVis)
+showTradeZone = input.bool(true, "Show Risk/Reward Zone", group=grpVis)                     // draw the red (risk) / green (reward) boxes and TP lines for each trade
+showTPLabels  = input.bool(true, "Show TP1/TP2/TP3 Labels", group=grpVis)                   // draw the small dot + text label at each active TP level
 
 // ───────────────────────────── Range Detector (LuxAlgo) ─────────────────────────────
+// This whole block just decides: is price currently "sideways"? It draws one evolving
+// box (bx) around a short SMA, widened by an ATR band. As long as every bar in the
+// lookback window stays inside that band, the range keeps extending; once price closes
+// outside it, the box/line just change color to show it's broken (they don't reset yet --
+// resetting/re-arming is handled below in the "Setup tracking" section).
 var box   bx   = na
 var line  lvl  = na
-var float rMax = na
-var float rMin = na
-var int   rOs  = 0
+var float rMax = na   // current top of the sideways range
+var float rMin = na   // current bottom of the sideways range
+var int   rOs  = 0    // 0 = still inside the range, 1 = broke up, -1 = broke down
 color detect_css = na
 
 n = bar_index
-rAtr = ta.atr(rangeAtrLen) * rangeMult
+rAtr = ta.atr(rangeAtrLen) * rangeMult   // how far price may wander from the SMA and still count as "sideways"
 ma = ta.sma(close, rangeLength)
 
+// Count how many of the last `rangeLength` closes are further than `rAtr` from the SMA.
+// A range is "detected" the instant that count drops to zero (rCount[1] != rCount catches
+// the transition, so this only fires once per new/extended range, not every bar).
 rCount = 0
 for i = 0 to rangeLength - 1
     rCount += math.abs(close[i] - ma) > rAtr ? 1 : 0
@@ -61,6 +69,8 @@ for i = 0 to rangeLength - 1
 rangeEvent = rCount == 0 and rCount[1] != rCount
 
 if rangeEvent
+    // If the new range overlaps the box still being drawn from a previous range,
+    // just stretch that same box/line to cover both instead of starting a new one.
     if n[rangeLength] <= bx.get_right()
         rMax := math.max(ma + rAtr, bx.get_top())
         rMin := math.min(ma - rAtr, bx.get_bottom())
@@ -72,6 +82,7 @@ if rangeEvent
         lvl.set_xy2(n, avg)
         lvl.set_color(unbrokenCss)
     else
+        // Otherwise this is a genuinely new range -- draw a fresh box/midline.
         rMax := ma + rAtr
         rMin := ma - rAtr
         bx := box.new(n[rangeLength], ma + rAtr, n, ma - rAtr, na, bgcolor=color.new(unbrokenCss, 80))
@@ -79,9 +90,11 @@ if rangeEvent
         detect_css := color.new(color.gray, 80)
         rOs := 0
 else if rCount == 0
+    // Range is still intact (no new event) -- just keep extending the box rightward.
     bx.set_right(n)
     lvl.set_x2(n)
 
+// Recolor the box/line once price closes outside it, purely for visual reference.
 if close > bx.get_top()
     bx.set_bgcolor(color.new(upCss, 80))
     lvl.set_color(upCss)
@@ -101,12 +114,21 @@ atrVal = ta.atr(atrLength)
 // Scans the breakout leg for the nearest FVG; if none is found, falls back to
 // a retracement touch of the sideways zone itself (its high/low). Returns
 // [zoneHigh, zoneLow]. Read-only over outer state so it stays a plain function.
+//
+// d              = breakout direction, 1 = bullish, -1 = bearish
+// lockBarArg     = the bar index where the sideways range was locked (scan starts from here)
+// lockedHighArg/lockedLowArg = the frozen range boundaries (used as the fallback zone)
 f_findZone(d, lockBarArg, lockedHighArg, lockedLowArg) =>
-    scanLen = math.min(bar_index - lockBarArg, zoneScanMaxBars)
-    float fH = na
-    float fL = na
+    scanLen = math.min(bar_index - lockBarArg, zoneScanMaxBars)   // how many bars back we're allowed to search
+    float fH = na   // will hold the zone's upper edge
+    float fL = na   // will hold the zone's lower edge
     bool fvgFound = false
 
+    // Look bar-by-bar starting from the most RECENT candle (i=1, right before the
+    // current one) going backwards, for a classic 3-candle Fair Value Gap: a bullish
+    // FVG is a gap between candle[i+2]'s high and candle[i]'s low (candle[i+1] is the
+    // impulsive one in between); bearish is the mirror image. `break` stops at the
+    // first (nearest) match so the zone stays close to price action.
     if scanLen >= 3
         for i = 1 to scanLen - 2
             if not fvgFound
@@ -123,6 +145,8 @@ f_findZone(d, lockBarArg, lockedHighArg, lockedLowArg) =>
                 if fvgFound
                     break
 
+    // No qualifying FVG anywhere in the leg -- just use the sideways range's own
+    // high/low as the target zone (a retracement all the way back to the range).
     if not fvgFound
         fH := lockedHighArg
         fL := lockedLowArg
@@ -130,51 +154,58 @@ f_findZone(d, lockBarArg, lockedHighArg, lockedLowArg) =>
     [fH, fL]
 
 // ───────────────────────────── Setup tracking ─────────────────────────────
-// Each Setup is an independent breakout/retracement/trade lifecycle so several
-// can run concurrently -- one being watched/traded no longer blocks detecting
-// the next one.
-// state: 1 = watching for breakout, 4 = awaiting confirmation candle (fakeout
-// filter), 2 = waiting for retracement confirmation, 3 = hypothetical open trade
+// Each Setup is one independent breakout/retracement/trade lifecycle, tracked in an
+// array so several can run side by side -- watching or trading one range no longer
+// blocks noticing the next one.
+//
+// s.state meanings:
+//   1 = watching the locked range for a full-body breakout
+//   4 = breakout just happened, waiting one candle to confirm it isn't a fakeout
+//   2 = breakout confirmed, waiting for price to retrace to the zone + a confirmation candle
+//   3 = "in a trade" (simulated -- this script only plots/alerts, it has no real position)
+// A Setup is removed from the array once it times out, invalidates, or its trade closes.
 type Setup
     int   state
-    float lockedHigh
-    float lockedLow
-    int   lockBar
-    int   dir
-    int   breakoutTime
-    float zoneHigh
-    float zoneLow
-    float zoneMid
-    bool  touchedZone
-    float slPrice
-    float entryPrice
+    float lockedHigh    // frozen top of the sideways range this setup is watching
+    float lockedLow     // frozen bottom of the sideways range this setup is watching
+    int   lockBar       // bar index the range was locked at (anchors the FVG scan window)
+    int   dir           // 1 = long/bullish, -1 = short/bearish, 0 = not yet determined
+    int   breakoutTime  // timestamp of the confirmed breakout (drives the retracement timeout)
+    float zoneHigh      // top of the retracement target zone (FVG or range fallback)
+    float zoneLow       // bottom of the retracement target zone
+    float zoneMid       // midpoint of the zone -- this is the actual level price must touch
+    bool  touchedZone   // true once price has traded into the zone at least once
+    float slPrice       // stop-loss price for the (simulated) trade
+    float entryPrice    // entry price for the (simulated) trade
     float tp1Price
     float tp2Price
     float tp3Price
-    bool  tp1Hit
+    bool  tp1Hit        // true once price has reached TP1 (also triggers the breakeven move)
     bool  tp2Hit
     bool  tp3Hit
-    box   riskBox
-    box   rewardBox
-    line  entryLine
+    box   riskBox       // red box from entry to SL, drawn while the trade is open
+    box   rewardBox     // green box from entry to the last active TP
+    line  entryLine     // thin line marking the exact entry price
     line  tp1Line
     line  tp2Line
     line  tp3Line
-    label tp1Lbl
+    label tp1Lbl        // dot + "TP1" text label
     label tp2Lbl
     label tp3Lbl
-    int   flipsUsed
-    int   entryBar
-    bool  leftEntry
+    int   flipsUsed     // how many times this range's lineage has already flipped direction after an SL
+    int   entryBar      // bar index of entry (used for the stagnation timeout)
+    bool  leftEntry     // true once price has ever moved in the trade's favor past entryPrice
 
 var array<Setup> setups = array.new<Setup>()
 
 bool entrySignal  = false
 bool exitSignal   = false
-bool isLongEntry  = false
-bool isShortEntry = false
+bool isLongEntry  = false   // set true on any bar where a long entry fires (drives the "L" marker)
+bool isShortEntry = false   // set true on any bar where a short entry fires (drives the "S" marker)
 
 // ---- Arm a new setup whenever the range detector (re)confirms a range ----
+// (Skipped once the concurrent-setup cap is reached, or always skipped except when no
+// other setup is active at all, if stacking is turned off.)
 canArmNewSetup = allowStackedEntries ? array.size(setups) < maxConcurrentSetups : array.size(setups) == 0
 if rangeEvent and canArmNewSetup
     array.push(setups, Setup.new(state=1, lockedHigh=rMax, lockedLow=rMin, lockBar=n, dir=0, breakoutTime=na,
@@ -184,13 +215,22 @@ if rangeEvent and canArmNewSetup
          tp1Lbl=na, tp2Lbl=na, tp3Lbl=na, flipsUsed=0, entryBar=na, leftEntry=false))
 
 // ---- Advance every active setup, one state-step per bar ----
+// IMPORTANT: this uses if / else-if (not separate independent `if`s) so that only ONE
+// state transition happens per setup per bar. Pine would otherwise let a state change
+// made earlier in this block "fall through" and immediately trigger a later block on
+// the very same candle (e.g. breakout -> confirmed -> entered, all in one bar) --
+// else-if stops that cascade.
 numSetups = array.size(setups)
 if numSetups > 0
-    for idx = numSetups - 1 to 0
+    for idx = numSetups - 1 to 0    // iterate backwards so array.remove() below is safe mid-loop
         Setup s = array.get(setups, idx)
-        bool removeThis = false
+        bool removeThis = false     // set true anywhere below to drop this setup after this bar
 
+        // ============================================================
+        // STATE 3 -- simulated trade is open: watch for SL / TP / stagnation
+        // ============================================================
         if s.state == 3
+            // Stretch the visual boxes/lines out to the current bar while the trade lives.
             if showTradeZone and not na(s.riskBox)
                 box.set_right(s.riskBox, bar_index)
                 box.set_right(s.rewardBox, bar_index)
@@ -199,9 +239,12 @@ if numSetups > 0
                 line.set_x2(s.tp2Line, bar_index)
                 line.set_x2(s.tp3Line, bar_index)
 
+            // Stop moves to breakeven once TP1 has been hit (only meaningful when there's
+            // more than one TP -- with a single TP, hitting it just closes the trade).
             stopNow = (numTPs >= 2 and s.tp1Hit) ? s.entryPrice : s.slPrice
             stopHit = s.dir == 1 ? low <= stopNow : high >= stopNow
 
+            // Check each TP in order; TP2 can only fire after TP1, TP3 only after TP2.
             if not s.tp1Hit and (s.dir == 1 ? high >= s.tp1Price : low <= s.tp1Price)
                 s.tp1Hit := true
                 alert("Sideway Breakout Bot: TP1 hit" + (numTPs >= 2 ? ", SL moved to breakeven" : ", trade closed"), alert.freq_once_per_bar_close)
@@ -212,12 +255,20 @@ if numSetups > 0
                 s.tp3Hit := true
                 alert("Sideway Breakout Bot: TP3 hit, trade closed", alert.freq_once_per_bar_close)
 
+            // Stagnation tracking: once price has EVER traded past entryPrice in the
+            // trade's favor, `leftEntry` stays true forever (the trade "worked" at least
+            // a little). If that never happens within `stagnationBars`, flag it stagnant.
             if not s.leftEntry and (s.dir == 1 ? high > s.entryPrice : low < s.entryPrice)
                 s.leftEntry := true
             stagnant = stagnationBars > 0 and not s.leftEntry and (bar_index - s.entryBar) >= stagnationBars
 
+            // "Final" TP = whichever TP tier is the last one actually enabled by numTPs.
             finalTpHit = numTPs == 1 ? s.tp1Hit : numTPs == 2 ? s.tp2Hit : s.tp3Hit
+
             if stopHit
+                // Trade lost -- close it, and (if the flip budget isn't used up) spawn a
+                // brand-new setup that re-watches the SAME frozen range boundaries for a
+                // breakout in the OPPOSITE direction, starting fresh from state 1.
                 exitSignal := true
                 if s.flipsUsed < maxSlFlips
                     array.push(setups, Setup.new(state=1, lockedHigh=s.lockedHigh, lockedLow=s.lockedLow, lockBar=bar_index, dir=0, breakoutTime=na,
@@ -228,16 +279,23 @@ if numSetups > 0
                     alert("Sideway Breakout Bot: SL hit, watching the same range for an opposite breakout", alert.freq_once_per_bar_close)
                 removeThis := true
             else if finalTpHit
+                // Trade won all the way to its last target -- just close, no flip.
                 exitSignal := true
                 removeThis := true
             else if stagnant
+                // Trade never showed any progress -- cut it, no flip (this isn't an SL hit).
                 exitSignal := true
                 removeThis := true
                 alert("Sideway Breakout Bot: stagnant trade closed after " + str.tostring(stagnationBars) + " bars", alert.freq_once_per_bar_close)
 
+        // ============================================================
+        // STATE 1 -- watching the locked range for a full-body breakout
+        // ============================================================
         else if s.state == 1
             bodySize = math.abs(close - open)
             passesBody = not useBodyFilter or bodySize >= bodyATRMult * atrVal
+            // "Full-body" breakout: BOTH the open and close must clear the range, not
+            // just a wick -- a single long shadow poking through doesn't count.
             bullBreak = math.min(open, close) > s.lockedHigh and passesBody
             bearBreak = math.max(open, close) < s.lockedLow and passesBody
 
@@ -245,9 +303,11 @@ if numSetups > 0
                 s.dir := bullBreak ? 1 : -1
                 s.breakoutTime := time
                 if useFakeoutFilter
+                    // Don't trust it yet -- move to state 4 and wait one more candle.
                     s.state := 4
                     alert("Sideway Breakout Bot: " + (bullBreak ? "bullish" : "bearish") + " breakout, awaiting confirmation candle", alert.freq_once_per_bar_close)
                 else
+                    // Filter is off -- go straight to finding the retracement zone.
                     [zH, zL] = f_findZone(s.dir, s.lockBar, s.lockedHigh, s.lockedLow)
                     s.zoneHigh := zH
                     s.zoneLow := zL
@@ -256,8 +316,12 @@ if numSetups > 0
                     s.state := 2
                     alert("Sideway Breakout Bot: " + (s.dir == 1 ? "bullish" : "bearish") + " breakout confirmed, zone identified", alert.freq_once_per_bar_close)
             else if bar_index - s.lockBar > maxBarsWatch
+                // No breakout for too long -- give up on this range entirely.
                 removeThis := true
 
+        // ============================================================
+        // STATE 4 -- fakeout filter: does the NEXT candle also clear the range?
+        // ============================================================
         else if s.state == 4
             bodySize4 = math.abs(close - open)
             passesBody4 = not useBodyFilter or bodySize4 >= bodyATRMult * atrVal
@@ -278,28 +342,43 @@ if numSetups > 0
                 s.state := 2
                 alert("Sideway Breakout Bot: " + (s.dir == 1 ? "bullish" : "bearish") + " breakout confirmed, zone identified", alert.freq_once_per_bar_close)
             else
+                // Candle failed to also clear the range -- treat the whole breakout as a
+                // fakeout. Reset direction and go back to state 1, still watching the SAME
+                // locked range (no need to wait for a brand-new consolidation).
                 s.dir := 0
                 s.breakoutTime := na
                 s.state := 1
                 alert("Sideway Breakout Bot: breakout failed confirmation (fakeout), watching for a new breakout", alert.freq_once_per_bar_close)
 
+        // ============================================================
+        // STATE 2 -- wait for price to retrace into the zone, then a confirmation candle
+        // ============================================================
         else if s.state == 2
+            // Has price traded into the zone (reached the midpoint) at least once?
+            // Sticky -- once true it stays true even if price moves away again.
             touched = s.dir == 1 ? low <= s.zoneMid : high >= s.zoneMid
             if touched
                 s.touchedZone := true
 
+            // A confirmation candle closes back beyond the zone's midpoint, in the
+            // SAME direction as the original breakout (i.e. the pullback is over).
             confirmBull = close > open and close > s.zoneMid
             confirmBear = close < open and close < s.zoneMid
             confirmation = s.touchedZone and (s.dir == 1 ? confirmBull : confirmBear)
 
+            // Invalidated = price fully reversed back through the FAR side of the range
+            // (not just a shallow pullback) -- the whole idea has failed.
             invalidated = s.dir == 1 ? close < s.lockedLow : close > s.lockedHigh
-            minutesSinceBreakout = (time - s.breakoutTime) / 60000.0
+            minutesSinceBreakout = (time - s.breakoutTime) / 60000.0   // wall-clock time, not bar count, so the timeout means the same thing on any chart timeframe
 
             if confirmation
+                // ---- Entry! Compute SL/TP levels and open the (simulated) trade. ----
                 s.entryPrice := close
                 buffer = slBufferATRMult * atrVal
+                // SL sits beyond the OPPOSITE boundary of the original range (i.e. the
+                // full width of the range is the initial risk), plus a small ATR buffer.
                 s.slPrice := s.dir == 1 ? s.lockedLow - buffer : s.lockedHigh + buffer
-                r = math.abs(s.entryPrice - s.slPrice)
+                r = math.abs(s.entryPrice - s.slPrice)   // "1R" = the risk distance
                 s.tp1Price := s.dir == 1 ? s.entryPrice + r * tp1R : s.entryPrice - r * tp1R
                 s.tp2Price := s.dir == 1 ? s.entryPrice + r * tp2R : s.entryPrice - r * tp2R
                 s.tp3Price := s.dir == 1 ? s.entryPrice + r * tp3R : s.entryPrice - r * tp3R
@@ -313,6 +392,8 @@ if numSetups > 0
                     isShortEntry := true
 
                 if showTradeZone
+                    // Reward zone extends only as far as whichever TP is actually the
+                    // last one enabled (numTPs), not always all the way to TP3.
                     lastTpPrice = numTPs == 1 ? s.tp1Price : numTPs == 2 ? s.tp2Price : s.tp3Price
                     riskTop = s.dir == 1 ? s.entryPrice : s.slPrice
                     riskBottom = s.dir == 1 ? s.slPrice : s.entryPrice
@@ -322,6 +403,8 @@ if numSetups > 0
                     s.rewardBox := box.new(bar_index, rewardTop, bar_index, rewardBottom, border_color=na, bgcolor=color.new(upCss, 75))
                     s.entryLine := line.new(bar_index, s.entryPrice, bar_index, s.entryPrice, color=color.new(color.white, 20), style=line.style_solid)
 
+                    // TP1 line is drawn slightly bolder/wider -- Pine labels have no true
+                    // bold text, so a larger size + width is the closest visual emphasis.
                     s.tp1Line := line.new(bar_index, s.tp1Price, bar_index, s.tp1Price, color=upCss, style=line.style_dashed, width=2)
                     if numTPs >= 2
                         s.tp2Line := line.new(bar_index, s.tp2Price, bar_index, s.tp2Price, color=color.new(upCss, 30), style=line.style_dashed)
@@ -336,8 +419,10 @@ if numSetups > 0
                 alert("Sideway Breakout Bot: " + (s.dir == 1 ? "LONG" : "SHORT") + " entry signal", alert.freq_once_per_bar_close)
 
             else if invalidated or minutesSinceBreakout > retraceTimeoutMin
+                // Gave up waiting, or price fully reversed -- drop this setup.
                 removeThis := true
 
+        // Apply any removal decided above, now that this setup's logic is done for the bar.
         if removeThis
             array.remove(setups, idx)
 
