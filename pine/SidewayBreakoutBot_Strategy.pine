@@ -110,15 +110,14 @@ plot(rMin, "Range Bottom", rMin != rMin[1] ? na : rOs == 0 ? unbrokenCss : rOs =
 // ───────────────────────────── Core calcs ─────────────────────────────
 atrVal = ta.atr(atrLength)
 
-// Scans the breakout leg for the nearest FVG, else a breaker candle, else falls
-// back to a leg retracement. Returns [zoneHigh, zoneLow]. Read-only over outer
-// state so it stays a plain function.
+// Scans the breakout leg for the nearest FVG; if none is found, falls back to
+// a retracement touch of the sideways zone itself (its high/low). Returns
+// [zoneHigh, zoneLow]. Read-only over outer state so it stays a plain function.
 f_findZone(d, lockBarArg, lockedHighArg, lockedLowArg) =>
     scanLen = math.min(bar_index - lockBarArg, zoneScanMaxBars)
     float fH = na
     float fL = na
     bool fvgFound = false
-    bool breakerFound = false
 
     if scanLen >= 3
         for i = 1 to scanLen - 2
@@ -136,24 +135,9 @@ f_findZone(d, lockBarArg, lockedHighArg, lockedLowArg) =>
                 if fvgFound
                     break
 
-    if not fvgFound and scanLen >= 2
-        for i = 1 to scanLen - 1
-            if not breakerFound
-                isOpposite = d == 1 ? close[i] < open[i] : close[i] > open[i]
-                if isOpposite
-                    fH := high[i]
-                    fL := low[i]
-                    breakerFound := true
-                if breakerFound
-                    break
-
-    if not fvgFound and not breakerFound
-        if d == 1
-            fL := lockedHighArg
-            fH := ta.highest(high, math.max(scanLen, 1))
-        else
-            fH := lockedLowArg
-            fL := ta.lowest(low, math.max(scanLen, 1))
+    if not fvgFound
+        fH := lockedHighArg
+        fL := lockedLowArg
 
     [fH, fL]
 
