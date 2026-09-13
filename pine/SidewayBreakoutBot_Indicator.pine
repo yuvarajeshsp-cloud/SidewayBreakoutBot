@@ -15,6 +15,7 @@ unbrokenCss = input.color(#2157f3, "Unbroken", group=grpRange)
 maxBarsWatch = input.int(50, "Max Bars to Wait for Breakout", minval=1, group=grpRange)
 allowStackedEntries = input.bool(true, "Allow Stacked Entries", group=grpRange)
 maxConcurrentSetups = input.int(3, "Max Concurrent Setups", minval=1, maxval=10, group=grpRange)
+maxSlFlips = input.int(1, "Max SL Flips per Range", minval=0, maxval=5, group=grpRange)
 
 grpBreak = "Breakout"
 atrLength        = input.int(14, "ATR Length (SL/Filters)", minval=1, group=grpBreak)
@@ -161,6 +162,7 @@ type Setup
     label tp1Lbl
     label tp2Lbl
     label tp3Lbl
+    int   flipsUsed
 
 var array<Setup> setups = array.new<Setup>()
 
@@ -176,7 +178,7 @@ if rangeEvent and canArmNewSetup
          zoneHigh=na, zoneLow=na, zoneMid=na, touchedZone=false, slPrice=na, entryPrice=na,
          tp1Price=na, tp2Price=na, tp3Price=na, tp1Hit=false, tp2Hit=false, tp3Hit=false,
          riskBox=na, rewardBox=na, entryLine=na, tp1Line=na, tp2Line=na, tp3Line=na,
-         tp1Lbl=na, tp2Lbl=na, tp3Lbl=na))
+         tp1Lbl=na, tp2Lbl=na, tp3Lbl=na, flipsUsed=0))
 
 // ---- Advance every active setup, one state-step per bar ----
 numSetups = array.size(setups)
@@ -208,7 +210,17 @@ if numSetups > 0
                 alert("Sideway Breakout Bot: TP3 hit, trade closed", alert.freq_once_per_bar_close)
 
             finalTpHit = numTPs == 1 ? s.tp1Hit : numTPs == 2 ? s.tp2Hit : s.tp3Hit
-            if stopHit or finalTpHit
+            if stopHit
+                exitSignal := true
+                if s.flipsUsed < maxSlFlips
+                    array.push(setups, Setup.new(state=1, lockedHigh=s.lockedHigh, lockedLow=s.lockedLow, lockBar=bar_index, dir=0, breakoutTime=na,
+                         zoneHigh=na, zoneLow=na, zoneMid=na, touchedZone=false, slPrice=na, entryPrice=na,
+                         tp1Price=na, tp2Price=na, tp3Price=na, tp1Hit=false, tp2Hit=false, tp3Hit=false,
+                         riskBox=na, rewardBox=na, entryLine=na, tp1Line=na, tp2Line=na, tp3Line=na,
+                         tp1Lbl=na, tp2Lbl=na, tp3Lbl=na, flipsUsed=s.flipsUsed + 1))
+                    alert("Sideway Breakout Bot: SL hit, watching the same range for an opposite breakout", alert.freq_once_per_bar_close)
+                removeThis := true
+            else if finalTpHit
                 exitSignal := true
                 removeThis := true
 

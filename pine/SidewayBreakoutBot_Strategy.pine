@@ -17,6 +17,7 @@ unbrokenCss = input.color(#2157f3, "Unbroken", group=grpRange)
 maxBarsWatch = input.int(50, "Max Bars to Wait for Breakout", minval=1, group=grpRange)
 allowStackedEntries = input.bool(true, "Allow Stacked Entries", group=grpRange)
 maxConcurrentSetups = input.int(3, "Max Concurrent Setups", minval=1, maxval=10, group=grpRange)
+maxSlFlips = input.int(1, "Max SL Flips per Range", minval=0, maxval=5, group=grpRange)
 
 grpBreak = "Breakout"
 atrLength         = input.int(14, "ATR Length (SL/Filters)", minval=1, group=grpBreak)
@@ -174,6 +175,8 @@ type Setup
     label  tp1Lbl
     label  tp2Lbl
     label  tp3Lbl
+    bool   stopWasHit
+    int    flipsUsed
 
 var array<Setup> setups = array.new<Setup>()
 var int setupCounter = 0
@@ -184,7 +187,8 @@ if rangeEvent and canArmNewSetup
     array.push(setups, Setup.new(state=1, lockedHigh=rMax, lockedLow=rMin, lockBar=n, dir=0, breakoutTime=na,
          zoneHigh=na, zoneLow=na, zoneMid=na, touchedZone=false, slPrice=na, entryPrice=na,
          tp1Price=na, tp2Price=na, tp3Price=na, tp1Filled=false, qtyAtEntry=na, entryId=na,
-         zoneBox=na, slLine=na, tp1Line=na, tp2Line=na, tp3Line=na, tp1Lbl=na, tp2Lbl=na, tp3Lbl=na))
+         zoneBox=na, slLine=na, tp1Line=na, tp2Line=na, tp3Line=na, tp1Lbl=na, tp2Lbl=na, tp3Lbl=na,
+         stopWasHit=false, flipsUsed=0))
 
 // ---- Advance every active setup, one state-step per bar ----
 numSetups = array.size(setups)
@@ -206,6 +210,13 @@ if numSetups > 0
             if posSize == 0
                 if not na(s.zoneBox)
                     box.delete(s.zoneBox)
+                if s.stopWasHit and s.flipsUsed < maxSlFlips
+                    array.push(setups, Setup.new(state=1, lockedHigh=s.lockedHigh, lockedLow=s.lockedLow, lockBar=bar_index, dir=0, breakoutTime=na,
+                         zoneHigh=na, zoneLow=na, zoneMid=na, touchedZone=false, slPrice=na, entryPrice=na,
+                         tp1Price=na, tp2Price=na, tp3Price=na, tp1Filled=false, qtyAtEntry=na, entryId=na,
+                         zoneBox=na, slLine=na, tp1Line=na, tp2Line=na, tp3Line=na, tp1Lbl=na, tp2Lbl=na, tp3Lbl=na,
+                         stopWasHit=false, flipsUsed=s.flipsUsed + 1))
+                    alert("Sideway Breakout Bot: SL hit, watching the same range for an opposite breakout", alert.freq_once_per_bar_close)
                 removeThis := true
             else
                 if numTPs >= 2 and not s.tp1Filled and math.abs(posSize) <= s.qtyAtEntry * (1 - tp1Pct / 100) + 1e-8
@@ -218,6 +229,9 @@ if numSetups > 0
                     strategy.exit("TP2_" + s.entryId, from_entry=s.entryId, qty_percent=tp2Pct, limit=s.tp2Price, stop=currentStop)
                 if numTPs >= 3
                     strategy.exit("TP3_" + s.entryId, from_entry=s.entryId, qty_percent=tp3Pct, limit=s.tp3Price, stop=currentStop)
+
+                if (s.dir == 1 ? low <= currentStop : high >= currentStop)
+                    s.stopWasHit := true
 
                 if showLevels and not na(s.slLine)
                     line.set_y1(s.slLine, currentStop)
