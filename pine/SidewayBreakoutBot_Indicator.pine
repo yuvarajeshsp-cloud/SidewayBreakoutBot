@@ -30,6 +30,7 @@ retraceTimeoutMin = input.int(30, "Retracement Timeout (minutes)", minval=1, gro
 
 grpRisk = "Risk Management"
 slBufferATRMult = input.float(0.1, "SL Buffer (x ATR)", minval=0, group=grpRisk)
+stagnationBars = input.int(30, "Close Stagnant Trade After (bars, 0=off)", minval=0, group=grpRisk)
 
 grpTP = "Take Profit"
 numTPs = input.int(3, "Number of Take Profits (1-3)", minval=1, maxval=3, group=grpTP)
@@ -163,6 +164,8 @@ type Setup
     label tp2Lbl
     label tp3Lbl
     int   flipsUsed
+    int   entryBar
+    bool  leftEntry
 
 var array<Setup> setups = array.new<Setup>()
 
@@ -178,7 +181,7 @@ if rangeEvent and canArmNewSetup
          zoneHigh=na, zoneLow=na, zoneMid=na, touchedZone=false, slPrice=na, entryPrice=na,
          tp1Price=na, tp2Price=na, tp3Price=na, tp1Hit=false, tp2Hit=false, tp3Hit=false,
          riskBox=na, rewardBox=na, entryLine=na, tp1Line=na, tp2Line=na, tp3Line=na,
-         tp1Lbl=na, tp2Lbl=na, tp3Lbl=na, flipsUsed=0))
+         tp1Lbl=na, tp2Lbl=na, tp3Lbl=na, flipsUsed=0, entryBar=na, leftEntry=false))
 
 // ---- Advance every active setup, one state-step per bar ----
 numSetups = array.size(setups)
@@ -209,6 +212,10 @@ if numSetups > 0
                 s.tp3Hit := true
                 alert("Sideway Breakout Bot: TP3 hit, trade closed", alert.freq_once_per_bar_close)
 
+            if not s.leftEntry and (s.dir == 1 ? high > s.entryPrice : low < s.entryPrice)
+                s.leftEntry := true
+            stagnant = stagnationBars > 0 and not s.leftEntry and (bar_index - s.entryBar) >= stagnationBars
+
             finalTpHit = numTPs == 1 ? s.tp1Hit : numTPs == 2 ? s.tp2Hit : s.tp3Hit
             if stopHit
                 exitSignal := true
@@ -217,12 +224,16 @@ if numSetups > 0
                          zoneHigh=na, zoneLow=na, zoneMid=na, touchedZone=false, slPrice=na, entryPrice=na,
                          tp1Price=na, tp2Price=na, tp3Price=na, tp1Hit=false, tp2Hit=false, tp3Hit=false,
                          riskBox=na, rewardBox=na, entryLine=na, tp1Line=na, tp2Line=na, tp3Line=na,
-                         tp1Lbl=na, tp2Lbl=na, tp3Lbl=na, flipsUsed=s.flipsUsed + 1))
+                         tp1Lbl=na, tp2Lbl=na, tp3Lbl=na, flipsUsed=s.flipsUsed + 1, entryBar=na, leftEntry=false))
                     alert("Sideway Breakout Bot: SL hit, watching the same range for an opposite breakout", alert.freq_once_per_bar_close)
                 removeThis := true
             else if finalTpHit
                 exitSignal := true
                 removeThis := true
+            else if stagnant
+                exitSignal := true
+                removeThis := true
+                alert("Sideway Breakout Bot: stagnant trade closed after " + str.tostring(stagnationBars) + " bars", alert.freq_once_per_bar_close)
 
         else if s.state == 1
             bodySize = math.abs(close - open)
@@ -294,6 +305,7 @@ if numSetups > 0
                 s.tp3Price := s.dir == 1 ? s.entryPrice + r * tp3R : s.entryPrice - r * tp3R
 
                 s.state := 3
+                s.entryBar := bar_index
                 entrySignal := true
                 if s.dir == 1
                     isLongEntry := true
