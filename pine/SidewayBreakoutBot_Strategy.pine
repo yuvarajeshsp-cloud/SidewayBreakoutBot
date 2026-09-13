@@ -63,7 +63,8 @@ grpVis = "Visuals"
 showZone      = input.bool(true, "Show Retracement Zone", group=grpVis)                     // draw the orange box marking the FVG/range retracement zone while waiting for entry
 showLevels    = input.bool(true, "Show Entry/SL/TP Levels", group=grpVis)                    // draw the SL/TP lines once a trade is open
 showTPLabels  = input.bool(true, "Show TP1/TP2/TP3 Labels", group=grpVis)                    // draw the small dot + text label at each active TP level
-zoneTransparency = input.int(30, "Risk/Reward Zone Transparency", minval=0, maxval=100, group=grpVis) // 0 = solid fill, 100 = invisible -- lower this for a more solid look, closer to TradingView's built-in Long/Short Position tool
+zoneTransparency = input.int(75, "Risk/Reward Zone Transparency (resting)", minval=0, maxval=100, group=grpVis) // fill while price has made no progress toward SL/TP yet -- 0 = solid, 100 = invisible
+minZoneTransparency = input.int(5, "Risk/Reward Zone Transparency (at SL/TP)", minval=0, maxval=100, group=grpVis) // fill once price actually reaches the SL or current TP target -- the two zones fill in solid as price approaches either level
 
 // ───────────────────────────── Range Detector (LuxAlgo) ─────────────────────────────
 // This whole block just decides: is price currently "sideways"? It draws one evolving
@@ -209,6 +210,9 @@ type Setup
     float  tp2Price
     float  tp3Price
     bool   tp1Filled     // true once the TP1 exit order has actually filled (partial close)
+    bool   tp1Touched    // sticky: true once price has ever reached TP1 (drives label color + zone fill progress)
+    bool   tp2Touched
+    bool   tp3Touched
     float  qtyAtEntry    // position size at entry, used to detect partial fills later
     string entryId       // this setup's unique strategy.entry() id (e.g. "Long_3")
     box    zoneBox       // orange box marking the retracement zone while waiting for entry
@@ -236,7 +240,7 @@ canArmNewSetup = allowStackedEntries ? array.size(setups) < maxConcurrentSetups 
 if rangeEvent and canArmNewSetup
     array.push(setups, Setup.new(state=1, lockedHigh=rMax, lockedLow=rMin, lockBar=n, dir=0, breakoutTime=na,
          zoneHigh=na, zoneLow=na, zoneMid=na, touchedZone=false, slPrice=na, entryPrice=na,
-         tp1Price=na, tp2Price=na, tp3Price=na, tp1Filled=false, qtyAtEntry=na, entryId=na,
+         tp1Price=na, tp2Price=na, tp3Price=na, tp1Filled=false, tp1Touched=false, tp2Touched=false, tp3Touched=false, qtyAtEntry=na, entryId=na,
          zoneBox=na, riskBox=na, rewardBox=na, slLine=na, tp1Line=na, tp2Line=na, tp3Line=na, tp1Lbl=na, tp2Lbl=na, tp3Lbl=na,
          stopWasHit=false, flipsUsed=0, entryBar=na, leftEntry=false))
 
@@ -275,7 +279,7 @@ if numSetups > 0
                 if s.stopWasHit and s.flipsUsed < maxSlFlips
                     array.push(setups, Setup.new(state=1, lockedHigh=s.lockedHigh, lockedLow=s.lockedLow, lockBar=bar_index, dir=0, breakoutTime=na,
                          zoneHigh=na, zoneLow=na, zoneMid=na, touchedZone=false, slPrice=na, entryPrice=na,
-                         tp1Price=na, tp2Price=na, tp3Price=na, tp1Filled=false, qtyAtEntry=na, entryId=na,
+                         tp1Price=na, tp2Price=na, tp3Price=na, tp1Filled=false, tp1Touched=false, tp2Touched=false, tp3Touched=false, qtyAtEntry=na, entryId=na,
                          zoneBox=na, riskBox=na, rewardBox=na, slLine=na, tp1Line=na, tp2Line=na, tp3Line=na, tp1Lbl=na, tp2Lbl=na, tp3Lbl=na,
                          stopWasHit=false, flipsUsed=s.flipsUsed + 1, entryBar=na, leftEntry=false))
                     alert("Sideway Breakout Bot: SL hit, watching the same range for an opposite breakout", alert.freq_once_per_bar_close)
@@ -299,13 +303,30 @@ if numSetups > 0
                 if numTPs >= 3
                     strategy.exit("TP3_" + s.entryId, from_entry=s.entryId, qty_percent=tp3Pct, limit=s.tp3Price, stop=currentStop)
 
-                // Flip each TP's dot label from blue to green once price actually reaches it.
-                if s.dir == 1 ? high >= s.tp1Price : low <= s.tp1Price
+                // Flip each TP's dot label from blue to green (sticky) once price actually
+                // reaches it. These flags also drive the reward-zone fill progress below.
+                if not s.tp1Touched and (s.dir == 1 ? high >= s.tp1Price : low <= s.tp1Price)
+                    s.tp1Touched := true
                     label.set_color(s.tp1Lbl, upCss)
-                if numTPs >= 2 and (s.dir == 1 ? high >= s.tp2Price : low <= s.tp2Price)
+                if numTPs >= 2 and not s.tp2Touched and (s.dir == 1 ? high >= s.tp2Price : low <= s.tp2Price)
+                    s.tp2Touched := true
                     label.set_color(s.tp2Lbl, upCss)
-                if numTPs >= 3 and (s.dir == 1 ? high >= s.tp3Price : low <= s.tp3Price)
+                if numTPs >= 3 and not s.tp3Touched and (s.dir == 1 ? high >= s.tp3Price : low <= s.tp3Price)
+                    s.tp3Touched := true
                     label.set_color(s.tp3Lbl, upCss)
+
+                // Fill the boxes in progressively as price approaches either side: faint
+                // (zoneTransparency) with no progress, solid (minZoneTransparency) once
+                // that side's level is actually reached. "Next TP" = whichever tier hasn't
+                // been reached yet.
+                if showLevels and not na(s.riskBox)
+                    nextTpPrice = s.tp1Touched ? (s.tp2Touched ? s.tp3Price : s.tp2Price) : s.tp1Price
+                    rewardProgress = math.max(0.0, math.min(1.0, s.dir == 1 ? (close - s.entryPrice) / (nextTpPrice - s.entryPrice) : (s.entryPrice - close) / (s.entryPrice - nextTpPrice)))
+                    riskProgress = math.max(0.0, math.min(1.0, s.dir == 1 ? (s.entryPrice - close) / (s.entryPrice - currentStop) : (close - s.entryPrice) / (currentStop - s.entryPrice)))
+                    rewardTrans = math.round(zoneTransparency - rewardProgress * (zoneTransparency - minZoneTransparency))
+                    riskTrans = math.round(zoneTransparency - riskProgress * (zoneTransparency - minZoneTransparency))
+                    box.set_bgcolor(s.rewardBox, color.new(upCss, int(rewardTrans)))
+                    box.set_bgcolor(s.riskBox, color.new(dnCss, int(riskTrans)))
 
                 // Remember (sticky) if price has crossed the stop level, so that once the
                 // position actually closes we know it was via the stop, not a TP -- this
