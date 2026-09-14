@@ -63,6 +63,7 @@ grpVis = "Visuals"
 showZone      = input.bool(true, "Show Retracement Zone", group=grpVis)                     // draw the orange box marking the FVG/range retracement zone while waiting for entry
 showLevels    = input.bool(true, "Show Entry/SL/TP Levels", group=grpVis)                    // draw the SL/TP lines once a trade is open
 showTPLabels  = input.bool(true, "Show TP1/TP2/TP3 Labels", group=grpVis)                    // draw the small dot + text label at each active TP level
+minWidthBars = input.int(30, "Minimum Position Width (bars)", minval=1, group=grpVis)         // the SL/TP lines and dots start this many bars wide instead of a 1-bar sliver, so a brand-new entry is visible right away
 
 // ───────────────────────────── Range Detector (LuxAlgo) ─────────────────────────────
 // This whole block just decides: is price currently "sideways"? It draws one evolving
@@ -321,20 +322,22 @@ if numSetups > 0
                     strategy.close(s.entryId, comment="Stagnant")
                     alert("Sideway Breakout Bot: stagnant trade closed after " + str.tostring(stagnationBars) + " bars", alert.freq_once_per_bar_close)
 
-                // The TP dot labels are also dragged forward to bar_index every bar --
-                // without this they'd stay pinned at the entry bar while the lines extend
-                // past them, so on a live chart the dots drift far behind current price
-                // instead of staying visible right next to it.
+                // The TP dot labels are also dragged forward the same way -- without this
+                // they'd stay pinned at the entry bar while the lines extend past them, so
+                // on a live chart the dots drift far behind current price instead of
+                // staying visible next to it. Never shrinks below the minWidthBars-wide
+                // starting span from entry.
                 if showLevels and not na(s.slLine)
+                    rightEdge = math.max(bar_index + 1, s.entryBar + minWidthBars)
                     line.set_y1(s.slLine, currentStop)
                     line.set_y2(s.slLine, currentStop)
-                    line.set_x2(s.slLine, bar_index + 1)
-                    line.set_x2(s.tp1Line, bar_index + 1)
-                    line.set_x2(s.tp2Line, bar_index + 1)
-                    line.set_x2(s.tp3Line, bar_index + 1)
-                    label.set_x(s.tp1Lbl, bar_index)
-                    label.set_x(s.tp2Lbl, bar_index)
-                    label.set_x(s.tp3Lbl, bar_index)
+                    line.set_x2(s.slLine, rightEdge)
+                    line.set_x2(s.tp1Line, rightEdge)
+                    line.set_x2(s.tp2Line, rightEdge)
+                    line.set_x2(s.tp3Line, rightEdge)
+                    label.set_x(s.tp1Lbl, rightEdge)
+                    label.set_x(s.tp2Lbl, rightEdge)
+                    label.set_x(s.tp3Lbl, rightEdge)
 
         // ============================================================
         // STATE 1 -- watching the locked range for a full-body breakout
@@ -461,22 +464,26 @@ if numSetups > 0
                     s.state := 3
                     s.entryBar := bar_index
                     if showLevels
-                        s.slLine := line.new(bar_index, s.slPrice, bar_index + 1, s.slPrice, color=color.red, style=line.style_dashed, extend=extend.none)
+                        // Start already minWidthBars wide (not a 1-bar sliver) so a
+                        // brand-new entry is immediately visible -- the per-bar update in
+                        // STATE 3 then keeps extending past this once real bars catch up.
+                        initialRight = bar_index + minWidthBars
+                        s.slLine := line.new(bar_index, s.slPrice, initialRight, s.slPrice, color=color.red, style=line.style_dashed, extend=extend.none)
                         // TP1's line is drawn slightly wider than TP2/TP3's for emphasis.
-                        s.tp1Line := line.new(bar_index, s.tp1Price, bar_index + 1, s.tp1Price, color=upCss, style=line.style_dotted, width=2)
+                        s.tp1Line := line.new(bar_index, s.tp1Price, initialRight, s.tp1Price, color=upCss, style=line.style_dotted, width=2)
                         if numTPs >= 2
-                            s.tp2Line := line.new(bar_index, s.tp2Price, bar_index + 1, s.tp2Price, color=color.new(upCss, 30), style=line.style_dotted)
+                            s.tp2Line := line.new(bar_index, s.tp2Price, initialRight, s.tp2Price, color=color.new(upCss, 30), style=line.style_dotted)
                         if numTPs >= 3
-                            s.tp3Line := line.new(bar_index, s.tp3Price, bar_index + 1, s.tp3Price, color=color.new(upCss, 30), style=line.style_dotted)
+                            s.tp3Line := line.new(bar_index, s.tp3Price, initialRight, s.tp3Price, color=color.new(upCss, 30), style=line.style_dotted)
                         if showTPLabels
                             // Small dots (matching the sideways-range dot styling), blue
                             // until that level is actually hit -- see the price checks
                             // above, in the STATE 3 block, that flip each one to green.
-                            s.tp1Lbl := label.new(bar_index, s.tp1Price, "TP1", style=label.style_circle, color=unbrokenCss, textcolor=color.white, size=size.tiny)
+                            s.tp1Lbl := label.new(initialRight, s.tp1Price, "TP1", style=label.style_circle, color=unbrokenCss, textcolor=color.white, size=size.tiny)
                             if numTPs >= 2
-                                s.tp2Lbl := label.new(bar_index, s.tp2Price, "TP2", style=label.style_circle, color=unbrokenCss, textcolor=color.white, size=size.tiny)
+                                s.tp2Lbl := label.new(initialRight, s.tp2Price, "TP2", style=label.style_circle, color=unbrokenCss, textcolor=color.white, size=size.tiny)
                             if numTPs >= 3
-                                s.tp3Lbl := label.new(bar_index, s.tp3Price, "TP3", style=label.style_circle, color=unbrokenCss, textcolor=color.white, size=size.tiny)
+                                s.tp3Lbl := label.new(initialRight, s.tp3Price, "TP3", style=label.style_circle, color=unbrokenCss, textcolor=color.white, size=size.tiny)
                     alert("Sideway Breakout Bot: " + (s.dir == 1 ? "LONG" : "SHORT") + " entry triggered", alert.freq_once_per_bar_close)
                 else
                     // Degenerate case (e.g. zero risk distance) -- can't size a trade, drop it.

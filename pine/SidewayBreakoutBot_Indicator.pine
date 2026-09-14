@@ -46,6 +46,7 @@ sessionTz = input.string("Asia/Kolkata", "Session Timezone", group=grpSession)  
 grpVis = "Visuals"
 showTradeZone = input.bool(true, "Show Risk/Reward Zone", group=grpVis)                     // draw the red (risk) / green (reward) boxes and TP lines for each trade
 showTPLabels  = input.bool(true, "Show TP1/TP2/TP3 Labels", group=grpVis)                   // draw the small dot + text label at each active TP level
+minWidthBars = input.int(30, "Minimum Position Width (bars)", minval=1, group=grpVis)        // the risk/reward boxes and TP dots start this many bars wide instead of a 1-bar sliver, so a brand-new entry is visible right away
 
 // ───────────────────────────── Range Detector (LuxAlgo) ─────────────────────────────
 // This whole block just decides: is price currently "sideways"? It draws one evolving
@@ -239,21 +240,22 @@ if numSetups > 0
         // STATE 3 -- simulated trade is open: watch for SL / TP / stagnation
         // ============================================================
         if s.state == 3
-            // Stretch the visual boxes/lines out to the current bar while the trade lives.
-            // The TP dot labels are also dragged forward to bar_index every bar -- without
-            // this they'd stay pinned at the entry bar while the lines/boxes extend past
-            // them, so on a live chart the dots drift far behind current price instead of
-            // staying visible right next to it.
+            // Stretch the visual boxes/lines out to the current bar while the trade lives
+            // (never shrinking below the minWidthBars-wide starting span). The TP dot
+            // labels are dragged forward the same way -- without this they'd stay pinned
+            // at the entry bar while the lines/boxes extend past them, so on a live chart
+            // the dots drift far behind current price instead of staying visible next to it.
             if showTradeZone and not na(s.riskBox)
-                box.set_right(s.riskBox, bar_index)
-                box.set_right(s.rewardBox, bar_index)
-                line.set_x2(s.entryLine, bar_index)
-                line.set_x2(s.tp1Line, bar_index)
-                line.set_x2(s.tp2Line, bar_index)
-                line.set_x2(s.tp3Line, bar_index)
-                label.set_x(s.tp1Lbl, bar_index)
-                label.set_x(s.tp2Lbl, bar_index)
-                label.set_x(s.tp3Lbl, bar_index)
+                rightEdge = math.max(bar_index, s.entryBar + minWidthBars)
+                box.set_right(s.riskBox, rightEdge)
+                box.set_right(s.rewardBox, rightEdge)
+                line.set_x2(s.entryLine, rightEdge)
+                line.set_x2(s.tp1Line, rightEdge)
+                line.set_x2(s.tp2Line, rightEdge)
+                line.set_x2(s.tp3Line, rightEdge)
+                label.set_x(s.tp1Lbl, rightEdge)
+                label.set_x(s.tp2Lbl, rightEdge)
+                label.set_x(s.tp3Lbl, rightEdge)
 
             // Stop moves to breakeven once TP1 has been hit (only meaningful when there's
             // more than one TP -- with a single TP, hitting it just closes the trade).
@@ -422,25 +424,29 @@ if numSetups > 0
                     riskBottom = s.dir == 1 ? s.slPrice : s.entryPrice
                     rewardTop = s.dir == 1 ? lastTpPrice : s.entryPrice
                     rewardBottom = s.dir == 1 ? s.entryPrice : lastTpPrice
-                    s.riskBox := box.new(bar_index, riskTop, bar_index, riskBottom, border_color=na, bgcolor=color.new(dnCss, 75))
-                    s.rewardBox := box.new(bar_index, rewardTop, bar_index, rewardBottom, border_color=na, bgcolor=color.new(upCss, 75))
-                    s.entryLine := line.new(bar_index, s.entryPrice, bar_index, s.entryPrice, color=color.new(color.white, 20), style=line.style_solid)
+                    // Start already minWidthBars wide (not a 1-bar sliver) so a brand-new
+                    // entry is immediately visible -- the per-bar update above then keeps
+                    // extending past this once real bars catch up to it.
+                    initialRight = bar_index + minWidthBars
+                    s.riskBox := box.new(bar_index, riskTop, initialRight, riskBottom, border_color=na, bgcolor=color.new(dnCss, 75))
+                    s.rewardBox := box.new(bar_index, rewardTop, initialRight, rewardBottom, border_color=na, bgcolor=color.new(upCss, 75))
+                    s.entryLine := line.new(bar_index, s.entryPrice, initialRight, s.entryPrice, color=color.new(color.white, 20), style=line.style_solid)
 
                     // TP1's line is drawn slightly wider than TP2/TP3's for emphasis.
-                    s.tp1Line := line.new(bar_index, s.tp1Price, bar_index, s.tp1Price, color=upCss, style=line.style_dashed, width=2)
+                    s.tp1Line := line.new(bar_index, s.tp1Price, initialRight, s.tp1Price, color=upCss, style=line.style_dashed, width=2)
                     if numTPs >= 2
-                        s.tp2Line := line.new(bar_index, s.tp2Price, bar_index, s.tp2Price, color=color.new(upCss, 30), style=line.style_dashed)
+                        s.tp2Line := line.new(bar_index, s.tp2Price, initialRight, s.tp2Price, color=color.new(upCss, 30), style=line.style_dashed)
                     if numTPs >= 3
-                        s.tp3Line := line.new(bar_index, s.tp3Price, bar_index, s.tp3Price, color=color.new(upCss, 30), style=line.style_dashed)
+                        s.tp3Line := line.new(bar_index, s.tp3Price, initialRight, s.tp3Price, color=color.new(upCss, 30), style=line.style_dashed)
                     if showTPLabels
                         // Small dots (matching the sideways-range dot styling), blue
                         // until that level is actually hit -- see the STATE 3 block
                         // above, where each label flips to green on its own TP hit.
-                        s.tp1Lbl := label.new(bar_index, s.tp1Price, "TP1", style=label.style_circle, color=unbrokenCss, textcolor=color.white, size=size.tiny)
+                        s.tp1Lbl := label.new(initialRight, s.tp1Price, "TP1", style=label.style_circle, color=unbrokenCss, textcolor=color.white, size=size.tiny)
                         if numTPs >= 2
-                            s.tp2Lbl := label.new(bar_index, s.tp2Price, "TP2", style=label.style_circle, color=unbrokenCss, textcolor=color.white, size=size.tiny)
+                            s.tp2Lbl := label.new(initialRight, s.tp2Price, "TP2", style=label.style_circle, color=unbrokenCss, textcolor=color.white, size=size.tiny)
                         if numTPs >= 3
-                            s.tp3Lbl := label.new(bar_index, s.tp3Price, "TP3", style=label.style_circle, color=unbrokenCss, textcolor=color.white, size=size.tiny)
+                            s.tp3Lbl := label.new(initialRight, s.tp3Price, "TP3", style=label.style_circle, color=unbrokenCss, textcolor=color.white, size=size.tiny)
                 alert("Sideway Breakout Bot: " + (s.dir == 1 ? "LONG" : "SHORT") + " entry signal", alert.freq_once_per_bar_close)
 
             else if invalidated or minutesSinceBreakout > retraceTimeoutMin
