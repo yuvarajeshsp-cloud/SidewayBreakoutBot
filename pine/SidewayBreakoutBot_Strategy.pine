@@ -209,6 +209,7 @@ type Setup
     float  tp2Price
     float  tp3Price
     bool   tp1Filled     // true once the TP1 exit order has actually filled (partial close)
+    bool   tp2Filled     // true once the TP2 exit order has actually filled (partial close)
     float  qtyAtEntry    // position size at entry, used to detect partial fills later
     string entryId       // this setup's unique strategy.entry() id (e.g. "Long_3")
     box    zoneBox       // orange box marking the retracement zone while waiting for entry
@@ -220,12 +221,26 @@ type Setup
     label  tp2Lbl
     label  tp3Lbl
     bool   stopWasHit    // sticky flag: true once price has ever crossed the current stop level
+    bool   stagnantClosed // sticky flag: true once strategy.close() was called for stagnation (so the posSize==0 branch, detected a bar later, doesn't misattribute the close to a TP)
     int    flipsUsed     // how many times this range's lineage has already flipped direction after an SL
     int    entryBar      // bar index of entry (used for the stagnation timeout)
     bool   leftEntry     // true once price has ever moved in the trade's favor past entryPrice
 
 var array<Setup> setups = array.new<Setup>()
 var int setupCounter = 0   // ever-increasing counter used to build unique entryId strings
+
+bool exitSignal   = false
+bool isLongEntry  = false   // set true on any bar where a long entry fires
+bool isShortEntry = false   // set true on any bar where a short entry fires
+// Per-event flags below each drive their own alertcondition() at the bottom of the
+// script, so SL/TP1/TP2/TP3/stagnant-close can each be set up as a SEPARATE TradingView
+// alert (with its own sound/popup/app-notification choices) instead of one generic
+// "any alert() call" catch-all that mixes every event together.
+bool slHitSignal    = false
+bool tp1HitSignal   = false
+bool tp2HitSignal   = false
+bool tp3HitSignal   = false
+bool stagnantSignal = false
 
 // ---- Arm a new setup whenever the range detector (re)confirms a range ----
 // (Skipped once the concurrent-setup cap is reached, or always skipped except when no
@@ -234,9 +249,9 @@ canArmNewSetup = allowStackedEntries ? array.size(setups) < maxConcurrentSetups 
 if rangeEvent and canArmNewSetup
     array.push(setups, Setup.new(state=1, lockedHigh=rMax, lockedLow=rMin, lockBar=n, dir=0, breakoutTime=na,
          zoneHigh=na, zoneLow=na, zoneMid=na, touchedZone=false, slPrice=na, entryPrice=na,
-         tp1Price=na, tp2Price=na, tp3Price=na, tp1Filled=false, qtyAtEntry=na, entryId=na,
+         tp1Price=na, tp2Price=na, tp3Price=na, tp1Filled=false, tp2Filled=false, qtyAtEntry=na, entryId=na,
          zoneBox=na, slLine=na, tp1Line=na, tp2Line=na, tp3Line=na, tp1Lbl=na, tp2Lbl=na, tp3Lbl=na,
-         stopWasHit=false, flipsUsed=0, entryBar=na, leftEntry=false))
+         stopWasHit=false, stagnantClosed=false, flipsUsed=0, entryBar=na, leftEntry=false))
 
 // ---- Advance every active setup, one state-step per bar ----
 // IMPORTANT: this uses if / else-if (not separate independent `if`s) so that only ONE
@@ -267,16 +282,38 @@ if numSetups > 0
                 // Position is fully closed (by SL, TP, or the stagnation close below).
                 if not na(s.zoneBox)
                     box.delete(s.zoneBox)
-                // If it closed via the stop (not TP), and the flip budget isn't used up,
-                // spawn a brand-new setup that re-watches the SAME frozen range boundaries
-                // for a breakout in the OPPOSITE direction, starting fresh from state 1.
-                if s.stopWasHit and s.flipsUsed < maxSlFlips
-                    array.push(setups, Setup.new(state=1, lockedHigh=s.lockedHigh, lockedLow=s.lockedLow, lockBar=bar_index, dir=0, breakoutTime=na,
-                         zoneHigh=na, zoneLow=na, zoneMid=na, touchedZone=false, slPrice=na, entryPrice=na,
-                         tp1Price=na, tp2Price=na, tp3Price=na, tp1Filled=false, qtyAtEntry=na, entryId=na,
-                         zoneBox=na, slLine=na, tp1Line=na, tp2Line=na, tp3Line=na, tp1Lbl=na, tp2Lbl=na, tp3Lbl=na,
-                         stopWasHit=false, flipsUsed=s.flipsUsed + 1, entryBar=na, leftEntry=false))
-                    alert("Sideway Breakout Bot: SL hit, watching the same range for an opposite breakout", alert.freq_once_per_bar_close)
+                exitSignal := true
+                if s.stopWasHit
+                    // Closed via the stop -- always alert this, regardless of whether a
+                    // flip is spawned below (previously this alert only fired inside the
+                    // flip-budget check, so once the flip budget ran out no SL alert fired
+                    // at all).
+                    slHitSignal := true
+                    alert("Sideway Breakout Bot: SL hit, trade closed", alert.freq_once_per_bar_close)
+                    // If the flip budget isn't used up, spawn a brand-new setup that
+                    // re-watches the SAME frozen range boundaries for a breakout in the
+                    // OPPOSITE direction, starting fresh from state 1.
+                    if s.flipsUsed < maxSlFlips
+                        array.push(setups, Setup.new(state=1, lockedHigh=s.lockedHigh, lockedLow=s.lockedLow, lockBar=bar_index, dir=0, breakoutTime=na,
+                             zoneHigh=na, zoneLow=na, zoneMid=na, touchedZone=false, slPrice=na, entryPrice=na,
+                             tp1Price=na, tp2Price=na, tp3Price=na, tp1Filled=false, tp2Filled=false, qtyAtEntry=na, entryId=na,
+                             zoneBox=na, slLine=na, tp1Line=na, tp2Line=na, tp3Line=na, tp1Lbl=na, tp2Lbl=na, tp3Lbl=na,
+                             stopWasHit=false, stagnantClosed=false, flipsUsed=s.flipsUsed + 1, entryBar=na, leftEntry=false))
+                        alert("Sideway Breakout Bot: watching the same range for an opposite breakout", alert.freq_once_per_bar_close)
+                else if s.stagnantClosed
+                    // The stagnation alert already fired when strategy.close() was called
+                    // (the actual close is only detected here, a bar later) -- just mark
+                    // the generic signal, no TP attribution.
+                    stagnantSignal := true
+                else
+                    // Closed via its final TP tier (whichever one numTPs makes the last
+                    // active target) instead of the stop or a stagnation close.
+                    if numTPs == 1
+                        tp1HitSignal := true
+                    else if numTPs == 2
+                        tp2HitSignal := true
+                    else
+                        tp3HitSignal := true
                 removeThis := true
             else
                 // Position still (partially) open -- manage it.
@@ -285,7 +322,16 @@ if numSetups > 0
                 // left after TP1's share closes; once seen, move the stop to breakeven.
                 if numTPs >= 2 and not s.tp1Filled and math.abs(posSize) <= s.qtyAtEntry * (1 - tp1Pct / 100) + 1e-8
                     s.tp1Filled := true
+                    tp1HitSignal := true
                     alert("Sideway Breakout Bot: TP1 hit, SL moved to breakeven", alert.freq_once_per_bar_close)
+
+                // Same idea for TP2's partial fill, only meaningful when TP3 is also
+                // active (otherwise TP2 is the final tier and closes the trade fully,
+                // detected instead by the posSize == 0 branch above).
+                if numTPs >= 3 and not s.tp2Filled and math.abs(posSize) <= s.qtyAtEntry * (1 - (tp1Pct + tp2Pct) / 100) + 1e-8
+                    s.tp2Filled := true
+                    tp2HitSignal := true
+                    alert("Sideway Breakout Bot: TP2 hit", alert.freq_once_per_bar_close)
 
                 // Re-issue the bracket orders every bar so the stop level (and any
                 // breakeven move) stays current. qty_percent on each is independent of
@@ -320,6 +366,7 @@ if numSetups > 0
                     s.leftEntry := true
                 if stagnationBars > 0 and not s.leftEntry and (bar_index - s.entryBar) >= stagnationBars
                     strategy.close(s.entryId, comment="Stagnant")
+                    s.stagnantClosed := true
                     alert("Sideway Breakout Bot: stagnant trade closed after " + str.tostring(stagnationBars) + " bars", alert.freq_once_per_bar_close)
 
                 // The TP dot labels are also dragged forward the same way -- without this
@@ -458,9 +505,11 @@ if numSetups > 0
                     if s.dir == 1
                         strategy.entry(s.entryId, strategy.long, qty=qtyToTrade)
                         label.new(bar_index, low, "LONG ENTRY", style=label.style_label_up, color=color.green, textcolor=color.white, yloc=yloc.belowbar)
+                        isLongEntry := true
                     else
                         strategy.entry(s.entryId, strategy.short, qty=qtyToTrade)
                         label.new(bar_index, high, "SHORT ENTRY", style=label.style_label_down, color=color.red, textcolor=color.white, yloc=yloc.abovebar)
+                        isShortEntry := true
                     s.state := 3
                     s.entryBar := bar_index
                     if showLevels
@@ -500,3 +549,15 @@ if numSetups > 0
         // Apply any removal decided above, now that this setup's logic is done for the bar.
         if removeThis
             array.remove(setups, idx)
+
+// ───────────────────────────── Alerts ─────────────────────────────
+// Separate alertcondition() per event so each can be selected individually when
+// creating an alert in TradingView (Notifications tab controls sound/desktop/mobile push).
+alertcondition(isLongEntry, "Long Entry Signal", "Sideway Breakout Bot: LONG entry signal")
+alertcondition(isShortEntry, "Short Entry Signal", "Sideway Breakout Bot: SHORT entry signal")
+alertcondition(exitSignal, "Trade Closed", "Sideway Breakout Bot: trade closed (SL or final TP)")
+alertcondition(slHitSignal, "Stop Loss Hit", "Sideway Breakout Bot: SL hit, trade closed")
+alertcondition(tp1HitSignal, "TP1 Hit", "Sideway Breakout Bot: TP1 hit")
+alertcondition(tp2HitSignal, "TP2 Hit", "Sideway Breakout Bot: TP2 hit")
+alertcondition(tp3HitSignal, "TP3 Hit", "Sideway Breakout Bot: TP3 hit, trade closed")
+alertcondition(stagnantSignal, "Stagnant Trade Closed", "Sideway Breakout Bot: trade closed early due to stagnation")

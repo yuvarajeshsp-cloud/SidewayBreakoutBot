@@ -212,6 +212,15 @@ bool entrySignal  = false
 bool exitSignal   = false
 bool isLongEntry  = false   // set true on any bar where a long entry fires (drives the "L" marker)
 bool isShortEntry = false   // set true on any bar where a short entry fires (drives the "S" marker)
+// Per-event flags below each drive their own alertcondition() at the bottom of the
+// script, so SL/TP1/TP2/TP3/stagnant-close can each be set up as a SEPARATE TradingView
+// alert (with its own sound/popup/app-notification choices) instead of one generic
+// "any alert() call" catch-all that mixes every event together.
+bool slHitSignal      = false
+bool tp1HitSignal     = false
+bool tp2HitSignal     = false
+bool tp3HitSignal     = false
+bool stagnantSignal   = false
 
 // ---- Arm a new setup whenever the range detector (re)confirms a range ----
 // (Skipped once the concurrent-setup cap is reached, or always skipped except when no
@@ -267,14 +276,17 @@ if numSetups > 0
             if not s.tp1Hit and (s.dir == 1 ? high >= s.tp1Price : low <= s.tp1Price)
                 s.tp1Hit := true
                 label.set_color(s.tp1Lbl, upCss)
+                tp1HitSignal := true
                 alert("Sideway Breakout Bot: TP1 hit" + (numTPs >= 2 ? ", SL moved to breakeven" : ", trade closed"), alert.freq_once_per_bar_close)
             if numTPs >= 2 and s.tp1Hit and not s.tp2Hit and (s.dir == 1 ? high >= s.tp2Price : low <= s.tp2Price)
                 s.tp2Hit := true
                 label.set_color(s.tp2Lbl, upCss)
+                tp2HitSignal := true
                 alert("Sideway Breakout Bot: TP2 hit" + (numTPs == 2 ? ", trade closed" : ""), alert.freq_once_per_bar_close)
             if numTPs >= 3 and s.tp2Hit and not s.tp3Hit and (s.dir == 1 ? high >= s.tp3Price : low <= s.tp3Price)
                 s.tp3Hit := true
                 label.set_color(s.tp3Lbl, upCss)
+                tp3HitSignal := true
                 alert("Sideway Breakout Bot: TP3 hit, trade closed", alert.freq_once_per_bar_close)
 
             // Stagnation tracking: once price has EVER traded past entryPrice in the
@@ -292,13 +304,15 @@ if numSetups > 0
                 // brand-new setup that re-watches the SAME frozen range boundaries for a
                 // breakout in the OPPOSITE direction, starting fresh from state 1.
                 exitSignal := true
+                slHitSignal := true
+                alert("Sideway Breakout Bot: SL hit, trade closed", alert.freq_once_per_bar_close)
                 if s.flipsUsed < maxSlFlips
                     array.push(setups, Setup.new(state=1, lockedHigh=s.lockedHigh, lockedLow=s.lockedLow, lockBar=bar_index, dir=0, breakoutTime=na,
                          zoneHigh=na, zoneLow=na, zoneMid=na, touchedZone=false, slPrice=na, entryPrice=na,
                          tp1Price=na, tp2Price=na, tp3Price=na, tp1Hit=false, tp2Hit=false, tp3Hit=false,
                          riskBox=na, rewardBox=na, entryLine=na, tp1Line=na, tp2Line=na, tp3Line=na,
                          tp1Lbl=na, tp2Lbl=na, tp3Lbl=na, flipsUsed=s.flipsUsed + 1, entryBar=na, leftEntry=false))
-                    alert("Sideway Breakout Bot: SL hit, watching the same range for an opposite breakout", alert.freq_once_per_bar_close)
+                    alert("Sideway Breakout Bot: watching the same range for an opposite breakout", alert.freq_once_per_bar_close)
                 removeThis := true
             else if finalTpHit
                 // Trade won all the way to its last target -- just close, no flip.
@@ -307,6 +321,7 @@ if numSetups > 0
             else if stagnant
                 // Trade never showed any progress -- cut it, no flip (this isn't an SL hit).
                 exitSignal := true
+                stagnantSignal := true
                 removeThis := true
                 alert("Sideway Breakout Bot: stagnant trade closed after " + str.tostring(stagnationBars) + " bars", alert.freq_once_per_bar_close)
 
@@ -465,3 +480,11 @@ plotshape(exitSignal, "Trade Closed", shape.xcross, location.abovebar, color.gra
 alertcondition(isLongEntry, "Long Entry Signal", "Sideway Breakout Bot: LONG entry signal")
 alertcondition(isShortEntry, "Short Entry Signal", "Sideway Breakout Bot: SHORT entry signal")
 alertcondition(exitSignal, "Trade Closed", "Sideway Breakout Bot: trade closed (SL or TP3)")
+
+// Separate alertcondition() per event so each can be selected individually when
+// creating an alert in TradingView (Notifications tab controls sound/desktop/mobile push).
+alertcondition(slHitSignal, "Stop Loss Hit", "Sideway Breakout Bot: SL hit, trade closed")
+alertcondition(tp1HitSignal, "TP1 Hit", "Sideway Breakout Bot: TP1 hit, SL moved to breakeven")
+alertcondition(tp2HitSignal, "TP2 Hit", "Sideway Breakout Bot: TP2 hit")
+alertcondition(tp3HitSignal, "TP3 Hit", "Sideway Breakout Bot: TP3 hit, trade closed")
+alertcondition(stagnantSignal, "Stagnant Trade Closed", "Sideway Breakout Bot: trade closed early due to stagnation")
