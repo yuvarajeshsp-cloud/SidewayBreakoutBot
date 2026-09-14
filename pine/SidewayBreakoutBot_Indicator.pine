@@ -47,6 +47,7 @@ grpVis = "Visuals"
 showTradeZone = input.bool(true, "Show Risk/Reward Zone", group=grpVis)                     // draw the red (risk) / green (reward) boxes and TP lines for each trade
 showTPLabels  = input.bool(true, "Show TP1/TP2/TP3/SL Hit Markers", group=grpVis)           // draw a small fixed dot + text label at the exact candle each level (TP1/TP2/TP3/SL) was hit
 minWidthBars = input.int(30, "Minimum Position Width (bars)", minval=1, group=grpVis)        // the risk/reward boxes and TP dots start this many bars wide instead of a 1-bar sliver, so a brand-new entry is visible right away
+fadeBands = 6   // number of stacked bands used to fade each risk/reward zone from solid (at entry) to transparent (at SL/TP) -- more bands = smoother gradient
 
 // ───────────────────────────── Range Detector (LuxAlgo) ─────────────────────────────
 // This whole block just decides: is price currently "sideways"? It draws one evolving
@@ -193,10 +194,8 @@ type Setup
     bool  tp1Hit        // true once price has reached TP1 (also triggers the breakeven move)
     bool  tp2Hit
     bool  tp3Hit
-    box   riskBandNear   // risk-zone half nearest the entry line (more opaque)
-    box   riskBandFar    // risk-zone half nearest the SL line (more transparent) -- together these fade like TradingView's own long/short position tool
-    box   rewardBandNear // reward-zone half nearest the entry line (more opaque)
-    box   rewardBandFar  // reward-zone half nearest the last active TP line (more transparent)
+    array<box> riskBands    // stacked bands from entry to SL, fading from solid (at entry) to transparent (at SL) -- like TradingView's own long/short position tool
+    array<box> rewardBands  // same idea, entry to the last active TP
     line  entryLine     // thin line marking the exact entry price
     line  slLine
     line  tp1Line
@@ -239,7 +238,7 @@ if rangeEvent and canArmNewSetup
     array.push(setups, Setup.new(state=1, lockedHigh=rMax, lockedLow=rMin, lockBar=n, dir=0, breakoutTime=na,
          zoneHigh=na, zoneLow=na, zoneMid=na, touchedZone=false, slPrice=na, entryPrice=na,
          tp1Price=na, tp2Price=na, tp3Price=na, tp1Hit=false, tp2Hit=false, tp3Hit=false,
-         riskBandNear=na, riskBandFar=na, rewardBandNear=na, rewardBandFar=na,
+         riskBands=array.new<box>(), rewardBands=array.new<box>(),
          entryLine=na, slLine=na, tp1Line=na, tp2Line=na, tp3Line=na,
          entryTag=na, slTag=na, tp1Tag=na, tp2Tag=na, tp3Tag=na,
          slLbl=na, tp1Lbl=na, tp2Lbl=na, tp3Lbl=na, flipsUsed=0, entryBar=na, leftEntry=false))
@@ -271,12 +270,13 @@ if numSetups > 0
             // The TP1/TP2/TP3/SL hit markers below are deliberately NOT dragged forward --
             // they stay pinned at the exact candle each level was hit, like TradingView's
             // own long/short position tool.
-            if showTradeZone and not na(s.riskBandNear)
+            if showTradeZone and array.size(s.riskBands) > 0
                 rightEdge = math.max(bar_index, s.entryBar + minWidthBars)
-                box.set_right(s.riskBandNear, rightEdge)
-                box.set_right(s.riskBandFar, rightEdge)
-                box.set_right(s.rewardBandNear, rightEdge)
-                box.set_right(s.rewardBandFar, rightEdge)
+                for i = 0 to array.size(s.riskBands) - 1
+                    box.set_right(array.get(s.riskBands, i), rightEdge)
+                if array.size(s.rewardBands) > 0
+                    for i = 0 to array.size(s.rewardBands) - 1
+                        box.set_right(array.get(s.rewardBands, i), rightEdge)
                 line.set_x2(s.entryLine, rightEdge)
                 line.set_x2(s.tp1Line, rightEdge)
                 line.set_x2(s.tp2Line, rightEdge)
@@ -336,7 +336,7 @@ if numSetups > 0
                     array.push(setups, Setup.new(state=1, lockedHigh=s.lockedHigh, lockedLow=s.lockedLow, lockBar=bar_index, dir=0, breakoutTime=na,
                          zoneHigh=na, zoneLow=na, zoneMid=na, touchedZone=false, slPrice=na, entryPrice=na,
                          tp1Price=na, tp2Price=na, tp3Price=na, tp1Hit=false, tp2Hit=false, tp3Hit=false,
-                         riskBandNear=na, riskBandFar=na, rewardBandNear=na, rewardBandFar=na,
+                         riskBands=array.new<box>(), rewardBands=array.new<box>(),
                          entryLine=na, slLine=na, tp1Line=na, tp2Line=na, tp3Line=na,
                          entryTag=na, slTag=na, tp1Tag=na, tp2Tag=na, tp3Tag=na,
                          slLbl=na, tp1Lbl=na, tp2Lbl=na, tp3Lbl=na, flipsUsed=s.flipsUsed + 1, entryBar=na, leftEntry=false))
@@ -463,30 +463,25 @@ if numSetups > 0
                     // Reward zone extends only as far as whichever TP is actually the
                     // last one enabled (numTPs), not always all the way to TP3.
                     lastTpPrice = numTPs == 1 ? s.tp1Price : numTPs == 2 ? s.tp2Price : s.tp3Price
-                    riskTop = s.dir == 1 ? s.entryPrice : s.slPrice
-                    riskBottom = s.dir == 1 ? s.slPrice : s.entryPrice
-                    riskMid = math.avg(riskTop, riskBottom)
-                    rewardTop = s.dir == 1 ? lastTpPrice : s.entryPrice
-                    rewardBottom = s.dir == 1 ? s.entryPrice : lastTpPrice
-                    rewardMid = math.avg(rewardTop, rewardBottom)
                     // Start already minWidthBars wide (not a 1-bar sliver) so a brand-new
                     // entry is immediately visible -- the per-bar update above then keeps
                     // extending past this once real bars catch up to it.
                     initialRight = bar_index + minWidthBars
 
-                    // Two-tier fade, like TradingView's own long/short position tool:
-                    // solid nearest the entry line, lighter toward the SL/TP edge. The
-                    // "near" half is always the half adjacent to entryPrice.
-                    if s.dir == 1
-                        s.riskBandNear := box.new(bar_index, riskTop, initialRight, riskMid, border_color=na, bgcolor=color.new(dnCss, 55))
-                        s.riskBandFar := box.new(bar_index, riskMid, initialRight, riskBottom, border_color=na, bgcolor=color.new(dnCss, 88))
-                        s.rewardBandNear := box.new(bar_index, rewardMid, initialRight, rewardBottom, border_color=na, bgcolor=color.new(upCss, 55))
-                        s.rewardBandFar := box.new(bar_index, rewardTop, initialRight, rewardMid, border_color=na, bgcolor=color.new(upCss, 88))
-                    else
-                        s.riskBandNear := box.new(bar_index, riskMid, initialRight, riskBottom, border_color=na, bgcolor=color.new(dnCss, 55))
-                        s.riskBandFar := box.new(bar_index, riskTop, initialRight, riskMid, border_color=na, bgcolor=color.new(dnCss, 88))
-                        s.rewardBandNear := box.new(bar_index, rewardTop, initialRight, rewardMid, border_color=na, bgcolor=color.new(upCss, 55))
-                        s.rewardBandFar := box.new(bar_index, rewardMid, initialRight, rewardBottom, border_color=na, bgcolor=color.new(upCss, 88))
+                    // Smooth fade like TradingView's own long/short position tool: stack
+                    // `fadeBands` thin strips from entryPrice out to the SL/TP edge, each
+                    // one more transparent than the last, instead of one flat-opacity box.
+                    // Interpolating the price boundaries directly (rather than branching
+                    // on s.dir) keeps this correct whether the far edge is above or below
+                    // entryPrice.
+                    for i = 0 to fadeBands - 1
+                        transp = int(45 + 45.0 * i / (fadeBands - 1))
+                        riskY0 = s.entryPrice + (s.slPrice - s.entryPrice) * i / fadeBands
+                        riskY1 = s.entryPrice + (s.slPrice - s.entryPrice) * (i + 1) / fadeBands
+                        array.push(s.riskBands, box.new(bar_index, math.max(riskY0, riskY1), initialRight, math.min(riskY0, riskY1), border_color=na, bgcolor=color.new(dnCss, transp)))
+                        rewardY0 = s.entryPrice + (lastTpPrice - s.entryPrice) * i / fadeBands
+                        rewardY1 = s.entryPrice + (lastTpPrice - s.entryPrice) * (i + 1) / fadeBands
+                        array.push(s.rewardBands, box.new(bar_index, math.max(rewardY0, rewardY1), initialRight, math.min(rewardY0, rewardY1), border_color=na, bgcolor=color.new(upCss, transp)))
 
                     s.entryLine := line.new(bar_index, s.entryPrice, initialRight, s.entryPrice, color=color.new(color.white, 20), style=line.style_solid)
                     s.slLine := line.new(bar_index, s.slPrice, initialRight, s.slPrice, color=dnCss, style=line.style_dashed)
