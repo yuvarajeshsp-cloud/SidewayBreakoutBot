@@ -475,7 +475,7 @@ if numSetups > 0
                     // on s.dir) keeps this correct whether the far edge is above or below
                     // entryPrice.
                     for i = 0 to fadeBands - 1
-                        transp = int(45 + 45.0 * i / (fadeBands - 1))
+                        transp = int(65 + 29.0 * i / (fadeBands - 1))
                         riskY0 = s.entryPrice + (s.slPrice - s.entryPrice) * i / fadeBands
                         riskY1 = s.entryPrice + (s.slPrice - s.entryPrice) * (i + 1) / fadeBands
                         array.push(s.riskBands, box.new(bar_index, math.max(riskY0, riskY1), initialRight, math.min(riskY0, riskY1), border_color=na, bgcolor=color.new(dnCss, transp)))
