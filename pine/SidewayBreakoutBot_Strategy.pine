@@ -321,6 +321,10 @@ if numSetups > 0
                     strategy.close(s.entryId, comment="Stagnant")
                     alert("Sideway Breakout Bot: stagnant trade closed after " + str.tostring(stagnationBars) + " bars", alert.freq_once_per_bar_close)
 
+                // The TP dot labels are also dragged forward to bar_index every bar --
+                // without this they'd stay pinned at the entry bar while the lines extend
+                // past them, so on a live chart the dots drift far behind current price
+                // instead of staying visible right next to it.
                 if showLevels and not na(s.slLine)
                     line.set_y1(s.slLine, currentStop)
                     line.set_y2(s.slLine, currentStop)
@@ -328,6 +332,9 @@ if numSetups > 0
                     line.set_x2(s.tp1Line, bar_index + 1)
                     line.set_x2(s.tp2Line, bar_index + 1)
                     line.set_x2(s.tp3Line, bar_index + 1)
+                    label.set_x(s.tp1Lbl, bar_index)
+                    label.set_x(s.tp2Lbl, bar_index)
+                    label.set_x(s.tp3Lbl, bar_index)
 
         // ============================================================
         // STATE 1 -- watching the locked range for a full-body breakout

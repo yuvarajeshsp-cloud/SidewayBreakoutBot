@@ -240,6 +240,10 @@ if numSetups > 0
         // ============================================================
         if s.state == 3
             // Stretch the visual boxes/lines out to the current bar while the trade lives.
+            // The TP dot labels are also dragged forward to bar_index every bar -- without
+            // this they'd stay pinned at the entry bar while the lines/boxes extend past
+            // them, so on a live chart the dots drift far behind current price instead of
+            // staying visible right next to it.
             if showTradeZone and not na(s.riskBox)
                 box.set_right(s.riskBox, bar_index)
                 box.set_right(s.rewardBox, bar_index)
@@ -247,6 +251,9 @@ if numSetups > 0
                 line.set_x2(s.tp1Line, bar_index)
                 line.set_x2(s.tp2Line, bar_index)
                 line.set_x2(s.tp3Line, bar_index)
+                label.set_x(s.tp1Lbl, bar_index)
+                label.set_x(s.tp2Lbl, bar_index)
+                label.set_x(s.tp3Lbl, bar_index)
 
             // Stop moves to breakeven once TP1 has been hit (only meaningful when there's
             // more than one TP -- with a single TP, hitting it just closes the trade).
