@@ -62,7 +62,7 @@ sessionTz = input.string("Asia/Kolkata", "Session Timezone", group=grpSession)  
 grpVis = "Visuals"
 showZone      = input.bool(true, "Show Retracement Zone", group=grpVis)                     // draw the orange box marking the FVG/range retracement zone while waiting for entry
 showLevels    = input.bool(true, "Show Entry/SL/TP Levels", group=grpVis)                    // draw the SL/TP lines once a trade is open
-showTPLabels  = input.bool(true, "Show TP1/TP2/TP3 Labels", group=grpVis)                    // draw the small dot + text label at each active TP level
+showTPLabels  = input.bool(true, "Show TP1/TP2/TP3/SL Hit Markers", group=grpVis)            // draw a small fixed dot + text label at the exact candle each level (TP1/TP2/TP3/SL) was hit
 minWidthBars = input.int(30, "Minimum Position Width (bars)", minval=1, group=grpVis)         // the SL/TP lines and dots start this many bars wide instead of a 1-bar sliver, so a brand-new entry is visible right away
 
 // ───────────────────────────── Range Detector (LuxAlgo) ─────────────────────────────
@@ -213,11 +213,22 @@ type Setup
     float  qtyAtEntry    // position size at entry, used to detect partial fills later
     string entryId       // this setup's unique strategy.entry() id (e.g. "Long_3")
     box    zoneBox       // orange box marking the retracement zone while waiting for entry
+    box    riskBandNear   // risk-zone half nearest the entry line (more opaque)
+    box    riskBandFar    // risk-zone half nearest the SL line (more transparent) -- together these fade like TradingView's own long/short position tool
+    box    rewardBandNear // reward-zone half nearest the entry line (more opaque)
+    box    rewardBandFar  // reward-zone half nearest the last active TP line (more transparent)
+    line   entryLine     // thin line marking the exact entry price
     line   slLine        // SL line, drawn once the trade is open
     line   tp1Line
     line   tp2Line
     line   tp3Line
-    label  tp1Lbl        // dot + "TP1" text label
+    label  entryTag      // right-edge price tag, e.g. "Entry (1234.56)"
+    label  slTag
+    label  tp1Tag
+    label  tp2Tag
+    label  tp3Tag
+    label  slLbl         // fixed dot + text marker, placed once at the exact bar a level was hit (never moved afterward)
+    label  tp1Lbl
     label  tp2Lbl
     label  tp3Lbl
     bool   stopWasHit    // sticky flag: true once price has ever crossed the current stop level
@@ -250,7 +261,10 @@ if rangeEvent and canArmNewSetup
     array.push(setups, Setup.new(state=1, lockedHigh=rMax, lockedLow=rMin, lockBar=n, dir=0, breakoutTime=na,
          zoneHigh=na, zoneLow=na, zoneMid=na, touchedZone=false, slPrice=na, entryPrice=na,
          tp1Price=na, tp2Price=na, tp3Price=na, tp1Filled=false, tp2Filled=false, qtyAtEntry=na, entryId=na,
-         zoneBox=na, slLine=na, tp1Line=na, tp2Line=na, tp3Line=na, tp1Lbl=na, tp2Lbl=na, tp3Lbl=na,
+         zoneBox=na, riskBandNear=na, riskBandFar=na, rewardBandNear=na, rewardBandFar=na,
+         entryLine=na, slLine=na, tp1Line=na, tp2Line=na, tp3Line=na,
+         entryTag=na, slTag=na, tp1Tag=na, tp2Tag=na, tp3Tag=na,
+         slLbl=na, tp1Lbl=na, tp2Lbl=na, tp3Lbl=na,
          stopWasHit=false, stagnantClosed=false, flipsUsed=0, entryBar=na, leftEntry=false))
 
 // ---- Advance every active setup, one state-step per bar ----
@@ -297,7 +311,10 @@ if numSetups > 0
                         array.push(setups, Setup.new(state=1, lockedHigh=s.lockedHigh, lockedLow=s.lockedLow, lockBar=bar_index, dir=0, breakoutTime=na,
                              zoneHigh=na, zoneLow=na, zoneMid=na, touchedZone=false, slPrice=na, entryPrice=na,
                              tp1Price=na, tp2Price=na, tp3Price=na, tp1Filled=false, tp2Filled=false, qtyAtEntry=na, entryId=na,
-                             zoneBox=na, slLine=na, tp1Line=na, tp2Line=na, tp3Line=na, tp1Lbl=na, tp2Lbl=na, tp3Lbl=na,
+                             zoneBox=na, riskBandNear=na, riskBandFar=na, rewardBandNear=na, rewardBandFar=na,
+                             entryLine=na, slLine=na, tp1Line=na, tp2Line=na, tp3Line=na,
+                             entryTag=na, slTag=na, tp1Tag=na, tp2Tag=na, tp3Tag=na,
+                             slLbl=na, tp1Lbl=na, tp2Lbl=na, tp3Lbl=na,
                              stopWasHit=false, stagnantClosed=false, flipsUsed=s.flipsUsed + 1, entryBar=na, leftEntry=false))
                         alert("Sideway Breakout Bot: watching the same range for an opposite breakout", alert.freq_once_per_bar_close)
                 else if s.stagnantClosed
@@ -343,19 +360,27 @@ if numSetups > 0
                 if numTPs >= 3
                     strategy.exit("TP3_" + s.entryId, from_entry=s.entryId, qty_percent=tp3Pct, limit=s.tp3Price, stop=currentStop)
 
-                // Flip each TP's dot label from blue to green once price actually reaches it.
-                if s.dir == 1 ? high >= s.tp1Price : low <= s.tp1Price
-                    label.set_color(s.tp1Lbl, upCss)
-                if numTPs >= 2 and (s.dir == 1 ? high >= s.tp2Price : low <= s.tp2Price)
-                    label.set_color(s.tp2Lbl, upCss)
-                if numTPs >= 3 and (s.dir == 1 ? high >= s.tp3Price : low <= s.tp3Price)
-                    label.set_color(s.tp3Lbl, upCss)
+                // Drop a small fixed dot+text marker at the exact candle each TP is first
+                // reached (never created twice, never moved afterward) -- matches
+                // TradingView's own long/short position tool convention of marking the
+                // bar a level was hit, rather than just recoloring a moving dot.
+                if na(s.tp1Lbl) and (s.dir == 1 ? high >= s.tp1Price : low <= s.tp1Price)
+                    if showTPLabels
+                        s.tp1Lbl := label.new(bar_index, s.tp1Price, "TP1", style=label.style_circle, color=upCss, textcolor=color.white, size=size.tiny)
+                if numTPs >= 2 and na(s.tp2Lbl) and (s.dir == 1 ? high >= s.tp2Price : low <= s.tp2Price)
+                    if showTPLabels
+                        s.tp2Lbl := label.new(bar_index, s.tp2Price, "TP2", style=label.style_circle, color=upCss, textcolor=color.white, size=size.tiny)
+                if numTPs >= 3 and na(s.tp3Lbl) and (s.dir == 1 ? high >= s.tp3Price : low <= s.tp3Price)
+                    if showTPLabels
+                        s.tp3Lbl := label.new(bar_index, s.tp3Price, "TP3", style=label.style_circle, color=upCss, textcolor=color.white, size=size.tiny)
 
                 // Remember (sticky) if price has crossed the stop level, so that once the
                 // position actually closes we know it was via the stop, not a TP -- this
                 // is what triggers the flip above, since a closed trade alone can't say
-                // which exit order actually filled it.
-                if (s.dir == 1 ? low <= currentStop : high >= currentStop)
+                // which exit order actually filled it. Also drops the fixed SL hit marker.
+                if s.dir == 1 ? low <= currentStop : high >= currentStop
+                    if na(s.slLbl) and showTPLabels
+                        s.slLbl := label.new(bar_index, currentStop, "SL", style=label.style_circle, color=dnCss, textcolor=color.white, size=size.tiny)
                     s.stopWasHit := true
 
                 // Stagnation tracking: once price has EVER traded past entryPrice in the
@@ -369,22 +394,32 @@ if numSetups > 0
                     s.stagnantClosed := true
                     alert("Sideway Breakout Bot: stagnant trade closed after " + str.tostring(stagnationBars) + " bars", alert.freq_once_per_bar_close)
 
-                // The TP dot labels are also dragged forward the same way -- without this
-                // they'd stay pinned at the entry bar while the lines extend past them, so
-                // on a live chart the dots drift far behind current price instead of
-                // staying visible next to it. Never shrinks below the minWidthBars-wide
-                // starting span from entry.
+                // Stretch the visual bands/lines/tags out to the current bar while the
+                // trade lives (never shrinking below the minWidthBars-wide starting span),
+                // and keep the SL line/tag tracking the current (possibly breakeven-
+                // adjusted) stop. The TP1/TP2/TP3/SL hit markers above are deliberately
+                // NOT dragged forward -- they stay pinned at the exact candle each level
+                // was hit.
                 if showLevels and not na(s.slLine)
                     rightEdge = math.max(bar_index + 1, s.entryBar + minWidthBars)
+                    box.set_right(s.riskBandNear, rightEdge)
+                    box.set_right(s.riskBandFar, rightEdge)
+                    box.set_right(s.rewardBandNear, rightEdge)
+                    box.set_right(s.rewardBandFar, rightEdge)
+                    line.set_x2(s.entryLine, rightEdge)
                     line.set_y1(s.slLine, currentStop)
                     line.set_y2(s.slLine, currentStop)
                     line.set_x2(s.slLine, rightEdge)
                     line.set_x2(s.tp1Line, rightEdge)
                     line.set_x2(s.tp2Line, rightEdge)
                     line.set_x2(s.tp3Line, rightEdge)
-                    label.set_x(s.tp1Lbl, rightEdge)
-                    label.set_x(s.tp2Lbl, rightEdge)
-                    label.set_x(s.tp3Lbl, rightEdge)
+                    label.set_x(s.entryTag, rightEdge)
+                    label.set_x(s.slTag, rightEdge)
+                    label.set_y(s.slTag, currentStop)
+                    label.set_text(s.slTag, "SL (" + str.tostring(currentStop, format.mintick) + ")")
+                    label.set_x(s.tp1Tag, rightEdge)
+                    label.set_x(s.tp2Tag, rightEdge)
+                    label.set_x(s.tp3Tag, rightEdge)
 
         // ============================================================
         // STATE 1 -- watching the locked range for a full-body breakout
@@ -513,26 +548,53 @@ if numSetups > 0
                     s.state := 3
                     s.entryBar := bar_index
                     if showLevels
+                        // Reward zone extends only as far as whichever TP is actually the
+                        // last one enabled (numTPs), not always all the way to TP3.
+                        lastTpPrice = numTPs == 1 ? s.tp1Price : numTPs == 2 ? s.tp2Price : s.tp3Price
+                        riskTop = s.dir == 1 ? s.entryPrice : s.slPrice
+                        riskBottom = s.dir == 1 ? s.slPrice : s.entryPrice
+                        riskMid = math.avg(riskTop, riskBottom)
+                        rewardTop = s.dir == 1 ? lastTpPrice : s.entryPrice
+                        rewardBottom = s.dir == 1 ? s.entryPrice : lastTpPrice
+                        rewardMid = math.avg(rewardTop, rewardBottom)
                         // Start already minWidthBars wide (not a 1-bar sliver) so a
                         // brand-new entry is immediately visible -- the per-bar update in
                         // STATE 3 then keeps extending past this once real bars catch up.
                         initialRight = bar_index + minWidthBars
-                        s.slLine := line.new(bar_index, s.slPrice, initialRight, s.slPrice, color=color.red, style=line.style_dashed, extend=extend.none)
+
+                        // Two-tier fade, like TradingView's own long/short position tool:
+                        // solid nearest the entry line, lighter toward the SL/TP edge. The
+                        // "near" half is always the half adjacent to entryPrice.
+                        if s.dir == 1
+                            s.riskBandNear := box.new(bar_index, riskTop, initialRight, riskMid, border_color=na, bgcolor=color.new(dnCss, 55))
+                            s.riskBandFar := box.new(bar_index, riskMid, initialRight, riskBottom, border_color=na, bgcolor=color.new(dnCss, 88))
+                            s.rewardBandNear := box.new(bar_index, rewardMid, initialRight, rewardBottom, border_color=na, bgcolor=color.new(upCss, 55))
+                            s.rewardBandFar := box.new(bar_index, rewardTop, initialRight, rewardMid, border_color=na, bgcolor=color.new(upCss, 88))
+                        else
+                            s.riskBandNear := box.new(bar_index, riskMid, initialRight, riskBottom, border_color=na, bgcolor=color.new(dnCss, 55))
+                            s.riskBandFar := box.new(bar_index, riskTop, initialRight, riskMid, border_color=na, bgcolor=color.new(dnCss, 88))
+                            s.rewardBandNear := box.new(bar_index, rewardTop, initialRight, rewardMid, border_color=na, bgcolor=color.new(upCss, 55))
+                            s.rewardBandFar := box.new(bar_index, rewardMid, initialRight, rewardBottom, border_color=na, bgcolor=color.new(upCss, 88))
+
+                        s.entryLine := line.new(bar_index, s.entryPrice, initialRight, s.entryPrice, color=color.new(color.white, 20), style=line.style_solid)
+                        s.slLine := line.new(bar_index, s.slPrice, initialRight, s.slPrice, color=dnCss, style=line.style_dashed, extend=extend.none)
                         // TP1's line is drawn slightly wider than TP2/TP3's for emphasis.
                         s.tp1Line := line.new(bar_index, s.tp1Price, initialRight, s.tp1Price, color=upCss, style=line.style_dotted, width=2)
                         if numTPs >= 2
                             s.tp2Line := line.new(bar_index, s.tp2Price, initialRight, s.tp2Price, color=color.new(upCss, 30), style=line.style_dotted)
                         if numTPs >= 3
                             s.tp3Line := line.new(bar_index, s.tp3Price, initialRight, s.tp3Price, color=color.new(upCss, 30), style=line.style_dotted)
-                        if showTPLabels
-                            // Small dots (matching the sideways-range dot styling), blue
-                            // until that level is actually hit -- see the price checks
-                            // above, in the STATE 3 block, that flip each one to green.
-                            s.tp1Lbl := label.new(initialRight, s.tp1Price, "TP1", style=label.style_circle, color=unbrokenCss, textcolor=color.white, size=size.tiny)
-                            if numTPs >= 2
-                                s.tp2Lbl := label.new(initialRight, s.tp2Price, "TP2", style=label.style_circle, color=unbrokenCss, textcolor=color.white, size=size.tiny)
-                            if numTPs >= 3
-                                s.tp3Lbl := label.new(initialRight, s.tp3Price, "TP3", style=label.style_circle, color=unbrokenCss, textcolor=color.white, size=size.tiny)
+
+                        // Right-edge price tags -- mirror TradingView's own position-tool
+                        // labels, showing each level's exact price, and slide forward with
+                        // the lines/bands above as the trade lives.
+                        s.entryTag := label.new(initialRight, s.entryPrice, "Entry (" + str.tostring(s.entryPrice, format.mintick) + ")", style=label.style_label_left, color=color.gray, textcolor=color.white, size=size.small)
+                        s.slTag := label.new(initialRight, s.slPrice, "SL (" + str.tostring(s.slPrice, format.mintick) + ")", style=label.style_label_left, color=dnCss, textcolor=color.white, size=size.small)
+                        s.tp1Tag := label.new(initialRight, s.tp1Price, "TP1 (" + str.tostring(s.tp1Price, format.mintick) + ")", style=label.style_label_left, color=upCss, textcolor=color.white, size=size.small)
+                        if numTPs >= 2
+                            s.tp2Tag := label.new(initialRight, s.tp2Price, "TP2 (" + str.tostring(s.tp2Price, format.mintick) + ")", style=label.style_label_left, color=upCss, textcolor=color.white, size=size.small)
+                        if numTPs >= 3
+                            s.tp3Tag := label.new(initialRight, s.tp3Price, "TP3 (" + str.tostring(s.tp3Price, format.mintick) + ")", style=label.style_label_left, color=upCss, textcolor=color.white, size=size.small)
                     alert("Sideway Breakout Bot: " + (s.dir == 1 ? "LONG" : "SHORT") + " entry triggered", alert.freq_once_per_bar_close)
                 else
                     // Degenerate case (e.g. zero risk distance) -- can't size a trade, drop it.
