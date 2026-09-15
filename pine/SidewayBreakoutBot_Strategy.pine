@@ -504,8 +504,12 @@ if numSetups > 0
             confirmation = s.touchedZone and (s.dir == 1 ? confirmBull : confirmBear)
 
             // Invalidated = price fully reversed back through the FAR side of the range
-            // (not just a shallow pullback) -- the whole idea has failed.
-            invalidated = s.dir == 1 ? close < s.lockedLow : close > s.lockedHigh
+            // (not just a shallow pullback) -- the whole idea has failed. Checked against
+            // the WICK (high/low), not just the close -- a retracement that spikes back
+            // through the far boundary intrabar has already round-tripped the whole range,
+            // even if it closes back inside it, so it shouldn't be allowed to keep waiting
+            // for a confirmation candle.
+            invalidated = s.dir == 1 ? low < s.lockedLow : high > s.lockedHigh
             minutesSinceBreakout = (time - s.breakoutTime) / 60000.0   // wall-clock time, not bar count, so the timeout means the same thing on any chart timeframe
 
             if confirmation and inSession
