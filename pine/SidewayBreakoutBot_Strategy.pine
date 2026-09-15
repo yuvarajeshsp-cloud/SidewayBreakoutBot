@@ -34,6 +34,8 @@ grpRisk = "Risk Management"
 riskPercent     = input.float(1.0, "Risk % per Trade", minval=0.01, group=grpRisk)          // % of current equity risked on each new trade
 slBufferATRMult = input.float(0.1, "SL Buffer (x ATR)", minval=0, group=grpRisk)             // extra cushion (in ATR) added beyond the opposite range boundary for the stop-loss
 stagnationBars  = input.int(30, "Close Stagnant Trade After (bars, 0=off)", minval=0, group=grpRisk) // close a trade early if price never moves in its favor for this many bars (0 = off)
+maxSlPips = input.float(200, "Max SL Distance (pips, 0=off)", minval=0, group=grpRisk)       // skip the entry entirely if the SL would be further than this many pips away
+pipSize = input.float(0.1, "Pip Size (price per pip)", minval=0.0000001, group=grpRisk)      // how much price one "pip" is on this symbol -- e.g. 0.1 for most indices, 0.0001 for most FX pairs, 0.01 for JPY pairs
 
 grpTP = "Take Profit"
 numTPs = input.int(3, "Number of Take Profits (1-3)", minval=1, maxval=3, group=grpTP)      // how many of TP1/TP2/TP3 are actually used
@@ -531,8 +533,12 @@ if numSetups > 0
                 // current equity: risk amount / (stop distance in price * point value).
                 riskAmount = strategy.equity * (riskPercent / 100)
                 qtyToTrade = r > 0 ? riskAmount / (r * syminfo.pointvalue) : 0.0
+                // Skip the trade entirely if the SL is further away (in pips) than the
+                // configured max -- the range's width won't change, so there's no point
+                // waiting for a re-confirmation on this same setup.
+                slTooWide = maxSlPips > 0 and r > maxSlPips * pipSize
 
-                if qtyToTrade > 0
+                if qtyToTrade > 0 and not slTooWide
                     // Unique id per setup (e.g. "Long_7") so multiple concurrent
                     // positions -- even in the same direction -- never collide.
                     setupCounter += 1
@@ -593,7 +599,8 @@ if numSetups > 0
                             s.tp3Tag := label.new(initialRight, s.tp3Price, "TP3 (" + str.tostring(s.tp3Price, format.mintick) + ")", style=label.style_label_left, color=upCss, textcolor=color.white, size=size.small)
                     alert("Sideway Breakout Bot: " + (s.dir == 1 ? "LONG" : "SHORT") + " entry triggered", alert.freq_once_per_bar_close)
                 else
-                    // Degenerate case (e.g. zero risk distance) -- can't size a trade, drop it.
+                    // Either a degenerate case (e.g. zero risk distance) that can't be
+                    // sized, or the SL is wider than the configured max -- drop it.
                     if not na(s.zoneBox)
                         box.delete(s.zoneBox)
                     removeThis := true

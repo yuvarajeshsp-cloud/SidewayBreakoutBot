@@ -31,6 +31,8 @@ retraceTimeoutMin = input.int(30, "Retracement Timeout (minutes)", minval=1, gro
 grpRisk = "Risk Management"
 slBufferATRMult = input.float(0.1, "SL Buffer (x ATR)", minval=0, group=grpRisk)             // extra cushion (in ATR) added beyond the opposite range boundary for the stop-loss
 stagnationBars = input.int(30, "Close Stagnant Trade After (bars, 0=off)", minval=0, group=grpRisk) // close a trade early if price never moves in its favor for this many bars (0 = off)
+maxSlPips = input.float(200, "Max SL Distance (pips, 0=off)", minval=0, group=grpRisk)       // skip the entry entirely if the SL would be further than this many pips away
+pipSize = input.float(0.1, "Pip Size (price per pip)", minval=0.0000001, group=grpRisk)      // how much price one "pip" is on this symbol -- e.g. 0.1 for most indices, 0.0001 for most FX pairs, 0.01 for JPY pairs
 
 grpTP = "Take Profit"
 numTPs = input.int(3, "Number of Take Profits (1-3)", minval=1, maxval=3, group=grpTP)      // how many of TP1/TP2/TP3 are actually used
@@ -441,68 +443,77 @@ if numSetups > 0
                 // (A confirmation outside the session window just doesn't enter -- the
                 // setup stays in state 2 and can still enter later if price re-confirms,
                 // or gets invalidated/timed out normally below in the meantime.)
-                s.entryPrice := close
+                candidateEntry = close
                 buffer = slBufferATRMult * atrVal
                 // SL sits beyond the OPPOSITE boundary of the original range (i.e. the
                 // full width of the range is the initial risk), plus a small ATR buffer.
-                s.slPrice := s.dir == 1 ? s.lockedLow - buffer : s.lockedHigh + buffer
-                r = math.abs(s.entryPrice - s.slPrice)   // "1R" = the risk distance
-                s.tp1Price := s.dir == 1 ? s.entryPrice + r * tp1R : s.entryPrice - r * tp1R
-                s.tp2Price := s.dir == 1 ? s.entryPrice + r * tp2R : s.entryPrice - r * tp2R
-                s.tp3Price := s.dir == 1 ? s.entryPrice + r * tp3R : s.entryPrice - r * tp3R
+                candidateSl = s.dir == 1 ? s.lockedLow - buffer : s.lockedHigh + buffer
+                r = math.abs(candidateEntry - candidateSl)   // "1R" = the risk distance
 
-                s.state := 3
-                s.entryBar := bar_index
-                entrySignal := true
-                if s.dir == 1
-                    isLongEntry := true
+                if maxSlPips > 0 and r > maxSlPips * pipSize
+                    // SL for this range is wider than the configured max -- skip the
+                    // trade entirely (the range's width won't change, so there's no
+                    // point waiting for a re-confirmation on this same setup).
+                    removeThis := true
                 else
-                    isShortEntry := true
+                    s.entryPrice := candidateEntry
+                    s.slPrice := candidateSl
+                    s.tp1Price := s.dir == 1 ? s.entryPrice + r * tp1R : s.entryPrice - r * tp1R
+                    s.tp2Price := s.dir == 1 ? s.entryPrice + r * tp2R : s.entryPrice - r * tp2R
+                    s.tp3Price := s.dir == 1 ? s.entryPrice + r * tp3R : s.entryPrice - r * tp3R
 
-                if showTradeZone
-                    // Reward zone extends only as far as whichever TP is actually the
-                    // last one enabled (numTPs), not always all the way to TP3.
-                    lastTpPrice = numTPs == 1 ? s.tp1Price : numTPs == 2 ? s.tp2Price : s.tp3Price
-                    // Start already minWidthBars wide (not a 1-bar sliver) so a brand-new
-                    // entry is immediately visible -- the per-bar update above then keeps
-                    // extending past this once real bars catch up to it.
-                    initialRight = bar_index + minWidthBars
+                    s.state := 3
+                    s.entryBar := bar_index
+                    entrySignal := true
+                    if s.dir == 1
+                        isLongEntry := true
+                    else
+                        isShortEntry := true
 
-                    // Smooth fade like TradingView's own long/short position tool: stack
-                    // `fadeBands` thin strips from entryPrice out to the SL/TP edge, each
-                    // one more transparent than the last, instead of one flat-opacity box.
-                    // Interpolating the price boundaries directly (rather than branching
-                    // on s.dir) keeps this correct whether the far edge is above or below
-                    // entryPrice.
-                    for i = 0 to fadeBands - 1
-                        transp = int(65 + 29.0 * i / (fadeBands - 1))
-                        riskY0 = s.entryPrice + (s.slPrice - s.entryPrice) * i / fadeBands
-                        riskY1 = s.entryPrice + (s.slPrice - s.entryPrice) * (i + 1) / fadeBands
-                        array.push(s.riskBands, box.new(bar_index, math.max(riskY0, riskY1), initialRight, math.min(riskY0, riskY1), border_color=na, bgcolor=color.new(dnCss, transp)))
-                        rewardY0 = s.entryPrice + (lastTpPrice - s.entryPrice) * i / fadeBands
-                        rewardY1 = s.entryPrice + (lastTpPrice - s.entryPrice) * (i + 1) / fadeBands
-                        array.push(s.rewardBands, box.new(bar_index, math.max(rewardY0, rewardY1), initialRight, math.min(rewardY0, rewardY1), border_color=na, bgcolor=color.new(upCss, transp)))
+                    if showTradeZone
+                        // Reward zone extends only as far as whichever TP is actually the
+                        // last one enabled (numTPs), not always all the way to TP3.
+                        lastTpPrice = numTPs == 1 ? s.tp1Price : numTPs == 2 ? s.tp2Price : s.tp3Price
+                        // Start already minWidthBars wide (not a 1-bar sliver) so a brand-new
+                        // entry is immediately visible -- the per-bar update above then keeps
+                        // extending past this once real bars catch up to it.
+                        initialRight = bar_index + minWidthBars
 
-                    s.entryLine := line.new(bar_index, s.entryPrice, initialRight, s.entryPrice, color=color.new(color.white, 20), style=line.style_solid)
-                    s.slLine := line.new(bar_index, s.slPrice, initialRight, s.slPrice, color=dnCss, style=line.style_dashed)
-                    // TP1's line is drawn slightly wider than TP2/TP3's for emphasis.
-                    s.tp1Line := line.new(bar_index, s.tp1Price, initialRight, s.tp1Price, color=upCss, style=line.style_dashed, width=2)
-                    if numTPs >= 2
-                        s.tp2Line := line.new(bar_index, s.tp2Price, initialRight, s.tp2Price, color=color.new(upCss, 30), style=line.style_dashed)
-                    if numTPs >= 3
-                        s.tp3Line := line.new(bar_index, s.tp3Price, initialRight, s.tp3Price, color=color.new(upCss, 30), style=line.style_dashed)
+                        // Smooth fade like TradingView's own long/short position tool: stack
+                        // `fadeBands` thin strips from entryPrice out to the SL/TP edge, each
+                        // one more transparent than the last, instead of one flat-opacity box.
+                        // Interpolating the price boundaries directly (rather than branching
+                        // on s.dir) keeps this correct whether the far edge is above or below
+                        // entryPrice.
+                        for i = 0 to fadeBands - 1
+                            transp = int(65 + 29.0 * i / (fadeBands - 1))
+                            riskY0 = s.entryPrice + (s.slPrice - s.entryPrice) * i / fadeBands
+                            riskY1 = s.entryPrice + (s.slPrice - s.entryPrice) * (i + 1) / fadeBands
+                            array.push(s.riskBands, box.new(bar_index, math.max(riskY0, riskY1), initialRight, math.min(riskY0, riskY1), border_color=na, bgcolor=color.new(dnCss, transp)))
+                            rewardY0 = s.entryPrice + (lastTpPrice - s.entryPrice) * i / fadeBands
+                            rewardY1 = s.entryPrice + (lastTpPrice - s.entryPrice) * (i + 1) / fadeBands
+                            array.push(s.rewardBands, box.new(bar_index, math.max(rewardY0, rewardY1), initialRight, math.min(rewardY0, rewardY1), border_color=na, bgcolor=color.new(upCss, transp)))
 
-                    // Right-edge price tags -- mirror TradingView's own position-tool
-                    // labels, showing each level's exact price, and slide forward with
-                    // the lines/bands above as the trade lives.
-                    s.entryTag := label.new(initialRight, s.entryPrice, "Entry (" + str.tostring(s.entryPrice, format.mintick) + ")", style=label.style_label_left, color=color.gray, textcolor=color.white, size=size.small)
-                    s.slTag := label.new(initialRight, s.slPrice, "SL (" + str.tostring(s.slPrice, format.mintick) + ")", style=label.style_label_left, color=dnCss, textcolor=color.white, size=size.small)
-                    s.tp1Tag := label.new(initialRight, s.tp1Price, "TP1 (" + str.tostring(s.tp1Price, format.mintick) + ")", style=label.style_label_left, color=upCss, textcolor=color.white, size=size.small)
-                    if numTPs >= 2
-                        s.tp2Tag := label.new(initialRight, s.tp2Price, "TP2 (" + str.tostring(s.tp2Price, format.mintick) + ")", style=label.style_label_left, color=upCss, textcolor=color.white, size=size.small)
-                    if numTPs >= 3
-                        s.tp3Tag := label.new(initialRight, s.tp3Price, "TP3 (" + str.tostring(s.tp3Price, format.mintick) + ")", style=label.style_label_left, color=upCss, textcolor=color.white, size=size.small)
-                alert("Sideway Breakout Bot: " + (s.dir == 1 ? "LONG" : "SHORT") + " entry signal", alert.freq_once_per_bar_close)
+                        s.entryLine := line.new(bar_index, s.entryPrice, initialRight, s.entryPrice, color=color.new(color.white, 20), style=line.style_solid)
+                        s.slLine := line.new(bar_index, s.slPrice, initialRight, s.slPrice, color=dnCss, style=line.style_dashed)
+                        // TP1's line is drawn slightly wider than TP2/TP3's for emphasis.
+                        s.tp1Line := line.new(bar_index, s.tp1Price, initialRight, s.tp1Price, color=upCss, style=line.style_dashed, width=2)
+                        if numTPs >= 2
+                            s.tp2Line := line.new(bar_index, s.tp2Price, initialRight, s.tp2Price, color=color.new(upCss, 30), style=line.style_dashed)
+                        if numTPs >= 3
+                            s.tp3Line := line.new(bar_index, s.tp3Price, initialRight, s.tp3Price, color=color.new(upCss, 30), style=line.style_dashed)
+
+                        // Right-edge price tags -- mirror TradingView's own position-tool
+                        // labels, showing each level's exact price, and slide forward with
+                        // the lines/bands above as the trade lives.
+                        s.entryTag := label.new(initialRight, s.entryPrice, "Entry (" + str.tostring(s.entryPrice, format.mintick) + ")", style=label.style_label_left, color=color.gray, textcolor=color.white, size=size.small)
+                        s.slTag := label.new(initialRight, s.slPrice, "SL (" + str.tostring(s.slPrice, format.mintick) + ")", style=label.style_label_left, color=dnCss, textcolor=color.white, size=size.small)
+                        s.tp1Tag := label.new(initialRight, s.tp1Price, "TP1 (" + str.tostring(s.tp1Price, format.mintick) + ")", style=label.style_label_left, color=upCss, textcolor=color.white, size=size.small)
+                        if numTPs >= 2
+                            s.tp2Tag := label.new(initialRight, s.tp2Price, "TP2 (" + str.tostring(s.tp2Price, format.mintick) + ")", style=label.style_label_left, color=upCss, textcolor=color.white, size=size.small)
+                        if numTPs >= 3
+                            s.tp3Tag := label.new(initialRight, s.tp3Price, "TP3 (" + str.tostring(s.tp3Price, format.mintick) + ")", style=label.style_label_left, color=upCss, textcolor=color.white, size=size.small)
+                    alert("Sideway Breakout Bot: " + (s.dir == 1 ? "LONG" : "SHORT") + " entry signal", alert.freq_once_per_bar_close)
 
             else if invalidated or minutesSinceBreakout > retraceTimeoutMin
                 // Gave up waiting, or price fully reversed -- drop this setup.
