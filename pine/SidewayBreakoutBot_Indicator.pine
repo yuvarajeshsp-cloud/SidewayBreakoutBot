@@ -46,6 +46,7 @@ sessionWindow = input.session("1000-2200", "Session", group=grpSession)         
 sessionTz = input.string("Asia/Kolkata", "Session Timezone", group=grpSession)                // IANA timezone name the session above is interpreted in (default IST)
 
 grpVis = "Visuals"
+showZone      = input.bool(true, "Show Retracement Zone", group=grpVis)                     // draw the orange box marking the FVG/range retracement zone while waiting for entry
 showTradeZone = input.bool(true, "Show Risk/Reward Zone", group=grpVis)                     // draw the red (risk) / green (reward) boxes and TP lines for each trade
 showTPLabels  = input.bool(true, "Show TP1/TP2/TP3/SL Hit Markers", group=grpVis)           // draw a small fixed dot + text label at the exact candle each level (TP1/TP2/TP3/SL) was hit
 minWidthBars = input.int(30, "Minimum Position Width (bars)", minval=1, group=grpVis)        // the risk/reward boxes and TP dots start this many bars wide instead of a 1-bar sliver, so a brand-new entry is visible right away
@@ -188,6 +189,7 @@ type Setup
     float zoneLow       // bottom of the retracement target zone
     float zoneMid       // midpoint of the zone -- this is the actual level price must touch
     bool  touchedZone   // true once price has traded into the zone at least once
+    box   zoneBox       // orange box marking the retracement zone while waiting for entry
     float slPrice       // stop-loss price for the (simulated) trade
     float entryPrice    // entry price for the (simulated) trade
     float tp1Price
@@ -317,6 +319,11 @@ if numSetups > 0
             // "Final" TP = whichever TP tier is the last one actually enabled by numTPs.
             finalTpHit = numTPs == 1 ? s.tp1Hit : numTPs == 2 ? s.tp2Hit : s.tp3Hit
 
+            if (stopHit or finalTpHit or stagnant) and not na(s.zoneBox)
+                // The trade is about to close one way or another below -- the
+                // retracement zone box that led to this entry has served its purpose.
+                box.delete(s.zoneBox)
+
             if stopHit
                 // Trade lost -- close it, and (if the flip budget isn't used up) spawn a
                 // brand-new setup that re-watches the SAME frozen range boundaries for a
@@ -328,7 +335,7 @@ if numSetups > 0
                 alert("Sideway Breakout Bot: SL hit, trade closed", alert.freq_once_per_bar_close)
                 if s.flipsUsed < maxSlFlips
                     array.push(setups, Setup.new(state=1, lockedHigh=s.lockedHigh, lockedLow=s.lockedLow, lockBar=bar_index, dir=0, breakoutTime=na,
-                         zoneHigh=na, zoneLow=na, zoneMid=na, touchedZone=false, slPrice=na, entryPrice=na,
+                         zoneHigh=na, zoneLow=na, zoneMid=na, touchedZone=false, zoneBox=na, slPrice=na, entryPrice=na,
                          tp1Price=na, tp2Price=na, tp3Price=na, tp1Hit=false, tp2Hit=false, tp3Hit=false,
                          riskBands=array.new<box>(), rewardBands=array.new<box>(),
                          entryLine=na, slLine=na, tp1Line=na, tp2Line=na, tp3Line=na,
@@ -373,6 +380,8 @@ if numSetups > 0
                     s.zoneMid := (zH + zL) / 2
                     s.touchedZone := false
                     s.state := 2
+                    if showZone
+                        s.zoneBox := box.new(bar_index, s.zoneHigh, bar_index, s.zoneLow, border_color=color.orange, bgcolor=color.new(color.orange, 85))
                     alert("Sideway Breakout Bot: " + (s.dir == 1 ? "bullish" : "bearish") + " breakout confirmed, zone identified", alert.freq_once_per_bar_close)
             else if bar_index - s.lockBar > maxBarsWatch
                 // No breakout for too long -- give up on this range entirely.
@@ -399,6 +408,8 @@ if numSetups > 0
                 scanLen2 = math.max(math.min(bar_index - s.lockBar, zoneScanMaxBars), 1)
                 s.touchedZone := s.dir == 1 ? ta.lowest(low, scanLen2) <= s.zoneMid : ta.highest(high, scanLen2) >= s.zoneMid
                 s.state := 2
+                if showZone
+                    s.zoneBox := box.new(bar_index, s.zoneHigh, bar_index, s.zoneLow, border_color=color.orange, bgcolor=color.new(color.orange, 85))
                 alert("Sideway Breakout Bot: " + (s.dir == 1 ? "bullish" : "bearish") + " breakout confirmed, zone identified", alert.freq_once_per_bar_close)
             else
                 // Candle failed to also clear the range -- treat the whole breakout as a
@@ -413,6 +424,9 @@ if numSetups > 0
         // STATE 2 -- wait for price to retrace into the zone, then a confirmation candle
         // ============================================================
         else if s.state == 2
+            if showZone and not na(s.zoneBox)
+                box.set_right(s.zoneBox, bar_index)   // keep stretching the zone box while we wait
+
             // Has price traded into the zone (reached the midpoint) at least once?
             // Sticky -- once true it stays true even if price moves away again.
             touched = s.dir == 1 ? low <= s.zoneMid : high >= s.zoneMid
@@ -448,6 +462,8 @@ if numSetups > 0
                     // SL is wider than the configured max -- skip the trade entirely (the
                     // range's width won't change, so there's no point waiting for a
                     // re-confirmation on this same setup).
+                    if not na(s.zoneBox)
+                        box.delete(s.zoneBox)
                     removeThis := true
                 else
                     s.entryPrice := candidateEntry
@@ -511,6 +527,8 @@ if numSetups > 0
 
             else if invalidated or minutesSinceBreakout > retraceTimeoutMin
                 // Gave up waiting, or price fully reversed -- drop this setup.
+                if not na(s.zoneBox)
+                    box.delete(s.zoneBox)
                 removeThis := true
 
         // Apply any removal decided above, now that this setup's logic is done for the bar.
@@ -529,7 +547,7 @@ if numSetups > 0
 canArmNewSetup = allowStackedEntries ? array.size(setups) < maxConcurrentSetups : array.size(setups) == 0
 if rangeEvent and canArmNewSetup
     array.push(setups, Setup.new(state=1, lockedHigh=rMax, lockedLow=rMin, lockBar=n, dir=0, breakoutTime=na,
-         zoneHigh=na, zoneLow=na, zoneMid=na, touchedZone=false, slPrice=na, entryPrice=na,
+         zoneHigh=na, zoneLow=na, zoneMid=na, touchedZone=false, zoneBox=na, slPrice=na, entryPrice=na,
          tp1Price=na, tp2Price=na, tp3Price=na, tp1Hit=false, tp2Hit=false, tp3Hit=false,
          riskBands=array.new<box>(), rewardBands=array.new<box>(),
          entryLine=na, slLine=na, tp1Line=na, tp2Line=na, tp3Line=na,
