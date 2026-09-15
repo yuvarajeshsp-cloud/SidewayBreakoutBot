@@ -96,6 +96,13 @@ for i = 0 to rangeLength - 1
 
 rangeEvent = rCount == 0 and rCount[1] != rCount
 
+// True only when this rangeEvent is a genuinely NEW range (a fresh box below), not
+// just a re-extension of one still being watched -- rCount can flicker back to 0
+// several times while the same consolidation keeps forming, and each flicker used to
+// re-arm a DUPLICATE setup with nearly the same boundaries as one already watching it,
+// so a single real range could produce two (or more) simultaneous entries on the same
+// breakout bar. Only a fresh range should arm a new setup.
+freshRange = false
 if rangeEvent
     // If the new range overlaps the box still being drawn from a previous range,
     // just stretch that same box/line to cover both instead of starting a new one.
@@ -117,6 +124,7 @@ if rangeEvent
         lvl := line.new(n[rangeLength], ma, n, ma, color=unbrokenCss, style=line.style_dotted)
         detect_css := color.new(color.gray, 80)
         rOs := 0
+        freshRange := true
 else if rCount == 0
     // Range is still intact (no new event) -- just keep extending the box rightward.
     bx.set_right(n)
@@ -619,17 +627,21 @@ if numSetups > 0
         if removeThis
             array.remove(setups, idx)
 
-// ---- Arm a new setup whenever the range detector (re)confirms a range ----
-// (Skipped once the concurrent-setup cap is reached, or always skipped except when no
-// other setup is active at all, if stacking is turned off.) Deliberately checked AFTER
+// ---- Arm a new setup whenever the range detector finds a GENUINELY NEW range ----
+// (freshRange, not just any rangeEvent -- see its definition above. rangeEvent alone
+// also fires when an ongoing consolidation merely re-extends the box it's already
+// forming, which would otherwise arm a duplicate setup watching nearly the same
+// boundaries as one already active, and both could then fire on the same breakout bar.)
+// Skipped once the concurrent-setup cap is reached, or always skipped except when no
+// other setup is active at all, if stacking is turned off. Deliberately checked AFTER
 // the state-machine loop above (not before it), so a setup that times out or invalidates
 // on this same bar frees its slot before this check runs -- otherwise a new range could
-// be silently dropped (and never retried, since rangeEvent is a one-bar pulse) even
+// be silently dropped (and never retried, since freshRange is a one-bar pulse) even
 // though a slot became available later in the very same bar. This is safe to defer: a
 // range just detected this bar always has close within [rMin, rMax] by construction, so
 // its own breakout condition can never be satisfied on this same bar anyway.
 canArmNewSetup = allowStackedEntries ? array.size(setups) < maxConcurrentSetups : array.size(setups) == 0
-if rangeEvent and canArmNewSetup
+if freshRange and canArmNewSetup
     array.push(setups, Setup.new(state=1, lockedHigh=rMax, lockedLow=rMin, lockBar=n, dir=0, breakoutTime=na,
          zoneHigh=na, zoneLow=na, zoneMid=na, touchedZone=false, slPrice=na, entryPrice=na,
          tp1Price=na, tp2Price=na, tp3Price=na, tp1Filled=false, tp2Filled=false, qtyAtEntry=na, entryId=na,
