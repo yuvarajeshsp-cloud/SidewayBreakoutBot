@@ -48,13 +48,15 @@ tp3Qty = input.float(34, "TP3 Close %", minval=1, maxval=100, group=grpTP)
 moveToBEAfterTP1 = input.bool(true, "Move SL to Breakeven after TP1", group=grpTP)
 
 // The last active tier always absorbs whatever % remains, so the position
-// fully closes no matter how many TPs are enabled.
+// fully closes no matter how many TPs are enabled or what the % inputs sum to.
 // numTPs==1: TP1 alone takes 100%.
 // numTPs==2: TP1 takes its configured %, TP2 takes the rest (ignores tp2Qty).
-// numTPs==3: unchanged -- each tier uses its own configured %.
+// numTPs==3: TP1/TP2 take their configured %s, TP3 takes the rest (ignores tp3Qty) --
+// without this, tp1Qty+tp2Qty+tp3Qty not summing to exactly 100 could leave a residual
+// position open forever (if <100) or make TP3 unfillable as configured (if >100).
 tp1Pct = numTPs == 1 ? 100.0 : tp1Qty
 tp2Pct = numTPs == 2 ? 100.0 - tp1Qty : tp2Qty
-tp3Pct = tp3Qty
+tp3Pct = math.max(0.0, 100.0 - tp1Pct - tp2Pct)
 
 grpSession = "Trading Session"
 useSessionFilter = input.bool(true, "Restrict Entries to Session", group=grpSession)         // range detection, breakout watching, and retracement waiting all still run 24/7 -- this only gates the final entry
@@ -168,7 +170,7 @@ f_findZone(d, lockBarArg, lockedHighArg, lockedLowArg) =>
                         fH := low[i]
                         fvgFound := true
                 else
-                    if high[i] < low[i + 2] and (high[i + 2] - high[i]) >= fvgMinATRMult * atrVal
+                    if high[i] < low[i + 2] and (low[i + 2] - high[i]) >= fvgMinATRMult * atrVal
                         fH := low[i + 2]
                         fL := high[i]
                         fvgFound := true
@@ -254,20 +256,6 @@ bool tp2HitSignal   = false
 bool tp3HitSignal   = false
 bool stagnantSignal = false
 
-// ---- Arm a new setup whenever the range detector (re)confirms a range ----
-// (Skipped once the concurrent-setup cap is reached, or always skipped except when no
-// other setup is active at all, if stacking is turned off.)
-canArmNewSetup = allowStackedEntries ? array.size(setups) < maxConcurrentSetups : array.size(setups) == 0
-if rangeEvent and canArmNewSetup
-    array.push(setups, Setup.new(state=1, lockedHigh=rMax, lockedLow=rMin, lockBar=n, dir=0, breakoutTime=na,
-         zoneHigh=na, zoneLow=na, zoneMid=na, touchedZone=false, slPrice=na, entryPrice=na,
-         tp1Price=na, tp2Price=na, tp3Price=na, tp1Filled=false, tp2Filled=false, qtyAtEntry=na, entryId=na,
-         zoneBox=na, riskBands=array.new<box>(), rewardBands=array.new<box>(),
-         entryLine=na, slLine=na, tp1Line=na, tp2Line=na, tp3Line=na,
-         entryTag=na, slTag=na, tp1Tag=na, tp2Tag=na, tp3Tag=na,
-         slLbl=na, tp1Lbl=na, tp2Lbl=na, tp3Lbl=na,
-         stopWasHit=false, stagnantClosed=false, flipsUsed=0, entryBar=na, leftEntry=false))
-
 // ---- Advance every active setup, one state-step per bar ----
 // IMPORTANT: this uses if / else-if (not separate independent `if`s) so that only ONE
 // state transition happens per setup per bar. Pine would otherwise let a state change
@@ -325,13 +313,19 @@ if numSetups > 0
                     stagnantSignal := true
                 else
                     // Closed via its final TP tier (whichever one numTPs makes the last
-                    // active target) instead of the stop or a stagnation close.
+                    // active target) instead of the stop or a stagnation close. alert()
+                    // fires here too (not just the alertcondition flag) so a generic
+                    // "Any alert() function call" TradingView alert also catches this --
+                    // every other exit path in this file already does the same.
                     if numTPs == 1
                         tp1HitSignal := true
+                        alert("Sideway Breakout Bot: TP1 hit, trade closed", alert.freq_once_per_bar_close)
                     else if numTPs == 2
                         tp2HitSignal := true
+                        alert("Sideway Breakout Bot: TP2 hit, trade closed", alert.freq_once_per_bar_close)
                     else
                         tp3HitSignal := true
+                        alert("Sideway Breakout Bot: TP3 hit, trade closed", alert.freq_once_per_bar_close)
                 removeThis := true
             else
                 // Position still (partially) open -- manage it.
@@ -614,6 +608,26 @@ if numSetups > 0
         // Apply any removal decided above, now that this setup's logic is done for the bar.
         if removeThis
             array.remove(setups, idx)
+
+// ---- Arm a new setup whenever the range detector (re)confirms a range ----
+// (Skipped once the concurrent-setup cap is reached, or always skipped except when no
+// other setup is active at all, if stacking is turned off.) Deliberately checked AFTER
+// the state-machine loop above (not before it), so a setup that times out or invalidates
+// on this same bar frees its slot before this check runs -- otherwise a new range could
+// be silently dropped (and never retried, since rangeEvent is a one-bar pulse) even
+// though a slot became available later in the very same bar. This is safe to defer: a
+// range just detected this bar always has close within [rMin, rMax] by construction, so
+// its own breakout condition can never be satisfied on this same bar anyway.
+canArmNewSetup = allowStackedEntries ? array.size(setups) < maxConcurrentSetups : array.size(setups) == 0
+if rangeEvent and canArmNewSetup
+    array.push(setups, Setup.new(state=1, lockedHigh=rMax, lockedLow=rMin, lockBar=n, dir=0, breakoutTime=na,
+         zoneHigh=na, zoneLow=na, zoneMid=na, touchedZone=false, slPrice=na, entryPrice=na,
+         tp1Price=na, tp2Price=na, tp3Price=na, tp1Filled=false, tp2Filled=false, qtyAtEntry=na, entryId=na,
+         zoneBox=na, riskBands=array.new<box>(), rewardBands=array.new<box>(),
+         entryLine=na, slLine=na, tp1Line=na, tp2Line=na, tp3Line=na,
+         entryTag=na, slTag=na, tp1Tag=na, tp2Tag=na, tp3Tag=na,
+         slLbl=na, tp1Lbl=na, tp2Lbl=na, tp3Lbl=na,
+         stopWasHit=false, stagnantClosed=false, flipsUsed=0, entryBar=na, leftEntry=false))
 
 // ───────────────────────────── Alerts ─────────────────────────────
 // Separate alertcondition() per event so each can be selected individually when

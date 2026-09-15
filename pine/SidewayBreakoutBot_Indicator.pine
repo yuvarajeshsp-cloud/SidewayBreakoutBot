@@ -151,7 +151,7 @@ f_findZone(d, lockBarArg, lockedHighArg, lockedLowArg) =>
                         fH := low[i]
                         fvgFound := true
                 else
-                    if high[i] < low[i + 2] and (high[i + 2] - high[i]) >= fvgMinATRMult * atrVal
+                    if high[i] < low[i + 2] and (low[i + 2] - high[i]) >= fvgMinATRMult * atrVal
                         fH := low[i + 2]
                         fL := high[i]
                         fvgFound := true
@@ -232,19 +232,6 @@ bool tp2HitSignal     = false
 bool tp3HitSignal     = false
 bool stagnantSignal   = false
 
-// ---- Arm a new setup whenever the range detector (re)confirms a range ----
-// (Skipped once the concurrent-setup cap is reached, or always skipped except when no
-// other setup is active at all, if stacking is turned off.)
-canArmNewSetup = allowStackedEntries ? array.size(setups) < maxConcurrentSetups : array.size(setups) == 0
-if rangeEvent and canArmNewSetup
-    array.push(setups, Setup.new(state=1, lockedHigh=rMax, lockedLow=rMin, lockBar=n, dir=0, breakoutTime=na,
-         zoneHigh=na, zoneLow=na, zoneMid=na, touchedZone=false, slPrice=na, entryPrice=na,
-         tp1Price=na, tp2Price=na, tp3Price=na, tp1Hit=false, tp2Hit=false, tp3Hit=false,
-         riskBands=array.new<box>(), rewardBands=array.new<box>(),
-         entryLine=na, slLine=na, tp1Line=na, tp2Line=na, tp3Line=na,
-         entryTag=na, slTag=na, tp1Tag=na, tp2Tag=na, tp3Tag=na,
-         slLbl=na, tp1Lbl=na, tp2Lbl=na, tp3Lbl=na, flipsUsed=0, entryBar=na, leftEntry=false))
-
 // ---- Advance every active setup, one state-step per bar ----
 // IMPORTANT: this uses if / else-if (not separate independent `if`s) so that only ONE
 // state transition happens per setup per bar. Pine would otherwise let a state change
@@ -261,6 +248,32 @@ if numSetups > 0
         // STATE 3 -- simulated trade is open: watch for SL / TP / stagnation
         // ============================================================
         if s.state == 3
+            // Check each TP in order; TP2 can only fire after TP1, TP3 only after TP2.
+            // Each hit drops a small fixed dot+text marker at the exact candle it happened.
+            // This runs BEFORE stopNow/stopHit below so that a single wide-range bar
+            // which reaches both TP1 and the pre-breakeven SL is judged using the
+            // already-updated (breakeven) stop, not the stale one -- otherwise the same
+            // bar could fire both "TP1 hit, SL moved to breakeven" and a contradictory
+            // "SL hit, trade closed" at the old stop level.
+            if not s.tp1Hit and (s.dir == 1 ? high >= s.tp1Price : low <= s.tp1Price)
+                s.tp1Hit := true
+                if showTPLabels
+                    s.tp1Lbl := label.new(bar_index, s.tp1Price, "TP1", style=label.style_circle, color=upCss, textcolor=color.white, size=size.tiny)
+                tp1HitSignal := true
+                alert("Sideway Breakout Bot: TP1 hit" + (numTPs >= 2 ? ", SL moved to breakeven" : ", trade closed"), alert.freq_once_per_bar_close)
+            if numTPs >= 2 and s.tp1Hit and not s.tp2Hit and (s.dir == 1 ? high >= s.tp2Price : low <= s.tp2Price)
+                s.tp2Hit := true
+                if showTPLabels
+                    s.tp2Lbl := label.new(bar_index, s.tp2Price, "TP2", style=label.style_circle, color=upCss, textcolor=color.white, size=size.tiny)
+                tp2HitSignal := true
+                alert("Sideway Breakout Bot: TP2 hit" + (numTPs == 2 ? ", trade closed" : ""), alert.freq_once_per_bar_close)
+            if numTPs >= 3 and s.tp2Hit and not s.tp3Hit and (s.dir == 1 ? high >= s.tp3Price : low <= s.tp3Price)
+                s.tp3Hit := true
+                if showTPLabels
+                    s.tp3Lbl := label.new(bar_index, s.tp3Price, "TP3", style=label.style_circle, color=upCss, textcolor=color.white, size=size.tiny)
+                tp3HitSignal := true
+                alert("Sideway Breakout Bot: TP3 hit, trade closed", alert.freq_once_per_bar_close)
+
             // Stop moves to breakeven once TP1 has been hit (only meaningful when there's
             // more than one TP -- with a single TP, hitting it just closes the trade).
             stopNow = (numTPs >= 2 and s.tp1Hit) ? s.entryPrice : s.slPrice
@@ -269,7 +282,7 @@ if numSetups > 0
             // Stretch the visual bands/lines/tags out to the current bar while the trade
             // lives (never shrinking below the minWidthBars-wide starting span), and keep
             // the SL line/tag tracking the current (possibly breakeven-adjusted) stop.
-            // The TP1/TP2/TP3/SL hit markers below are deliberately NOT dragged forward --
+            // The TP1/TP2/TP3/SL hit markers above are deliberately NOT dragged forward --
             // they stay pinned at the exact candle each level was hit, like TradingView's
             // own long/short position tool.
             if showTradeZone and array.size(s.riskBands) > 0
@@ -293,27 +306,6 @@ if numSetups > 0
                 label.set_x(s.slTag, rightEdge)
                 label.set_y(s.slTag, stopNow)
                 label.set_text(s.slTag, "SL (" + str.tostring(stopNow, format.mintick) + ")")
-
-            // Check each TP in order; TP2 can only fire after TP1, TP3 only after TP2.
-            // Each hit drops a small fixed dot+text marker at the exact candle it happened.
-            if not s.tp1Hit and (s.dir == 1 ? high >= s.tp1Price : low <= s.tp1Price)
-                s.tp1Hit := true
-                if showTPLabels
-                    s.tp1Lbl := label.new(bar_index, s.tp1Price, "TP1", style=label.style_circle, color=upCss, textcolor=color.white, size=size.tiny)
-                tp1HitSignal := true
-                alert("Sideway Breakout Bot: TP1 hit" + (numTPs >= 2 ? ", SL moved to breakeven" : ", trade closed"), alert.freq_once_per_bar_close)
-            if numTPs >= 2 and s.tp1Hit and not s.tp2Hit and (s.dir == 1 ? high >= s.tp2Price : low <= s.tp2Price)
-                s.tp2Hit := true
-                if showTPLabels
-                    s.tp2Lbl := label.new(bar_index, s.tp2Price, "TP2", style=label.style_circle, color=upCss, textcolor=color.white, size=size.tiny)
-                tp2HitSignal := true
-                alert("Sideway Breakout Bot: TP2 hit" + (numTPs == 2 ? ", trade closed" : ""), alert.freq_once_per_bar_close)
-            if numTPs >= 3 and s.tp2Hit and not s.tp3Hit and (s.dir == 1 ? high >= s.tp3Price : low <= s.tp3Price)
-                s.tp3Hit := true
-                if showTPLabels
-                    s.tp3Lbl := label.new(bar_index, s.tp3Price, "TP3", style=label.style_circle, color=upCss, textcolor=color.white, size=size.tiny)
-                tp3HitSignal := true
-                alert("Sideway Breakout Bot: TP3 hit, trade closed", alert.freq_once_per_bar_close)
 
             // Stagnation tracking: once price has EVER traded past entryPrice in the
             // trade's favor, `leftEntry` stays true forever (the trade "worked" at least
@@ -450,10 +442,12 @@ if numSetups > 0
                 candidateSl = s.dir == 1 ? s.lockedLow - buffer : s.lockedHigh + buffer
                 r = math.abs(candidateEntry - candidateSl)   // "1R" = the risk distance
 
-                if maxSlPips > 0 and r > maxSlPips * pipSize
-                    // SL for this range is wider than the configured max -- skip the
-                    // trade entirely (the range's width won't change, so there's no
-                    // point waiting for a re-confirmation on this same setup).
+                if r <= 0 or (maxSlPips > 0 and r > maxSlPips * pipSize)
+                    // Either a degenerate case (zero risk distance -- e.g. slBufferATRMult
+                    // is 0 and close lands exactly on the opposite range boundary) or the
+                    // SL is wider than the configured max -- skip the trade entirely (the
+                    // range's width won't change, so there's no point waiting for a
+                    // re-confirmation on this same setup).
                     removeThis := true
                 else
                     s.entryPrice := candidateEntry
@@ -522,6 +516,25 @@ if numSetups > 0
         // Apply any removal decided above, now that this setup's logic is done for the bar.
         if removeThis
             array.remove(setups, idx)
+
+// ---- Arm a new setup whenever the range detector (re)confirms a range ----
+// (Skipped once the concurrent-setup cap is reached, or always skipped except when no
+// other setup is active at all, if stacking is turned off.) Deliberately checked AFTER
+// the state-machine loop above (not before it), so a setup that times out or invalidates
+// on this same bar frees its slot before this check runs -- otherwise a new range could
+// be silently dropped (and never retried, since rangeEvent is a one-bar pulse) even
+// though a slot became available later in the very same bar. This is safe to defer: a
+// range just detected this bar always has close within [rMin, rMax] by construction, so
+// its own breakout condition can never be satisfied on this same bar anyway.
+canArmNewSetup = allowStackedEntries ? array.size(setups) < maxConcurrentSetups : array.size(setups) == 0
+if rangeEvent and canArmNewSetup
+    array.push(setups, Setup.new(state=1, lockedHigh=rMax, lockedLow=rMin, lockBar=n, dir=0, breakoutTime=na,
+         zoneHigh=na, zoneLow=na, zoneMid=na, touchedZone=false, slPrice=na, entryPrice=na,
+         tp1Price=na, tp2Price=na, tp3Price=na, tp1Hit=false, tp2Hit=false, tp3Hit=false,
+         riskBands=array.new<box>(), rewardBands=array.new<box>(),
+         entryLine=na, slLine=na, tp1Line=na, tp2Line=na, tp3Line=na,
+         entryTag=na, slTag=na, tp1Tag=na, tp2Tag=na, tp3Tag=na,
+         slLbl=na, tp1Lbl=na, tp2Lbl=na, tp3Lbl=na, flipsUsed=0, entryBar=na, leftEntry=false))
 
 // ───────────────────────────── Plots / signals ─────────────────────────────
 plotshape(isLongEntry, "Long Entry", shape.triangleup, location.belowbar, color.green, text="L", textcolor=color.white, size=size.small)
