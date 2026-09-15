@@ -406,7 +406,8 @@ if numSetups > 0
                 // already reached the zone -- seed touchedZone from that
                 // history instead of always starting at false.
                 scanLen2 = math.max(math.min(bar_index - s.lockBar, zoneScanMaxBars), 1)
-                s.touchedZone := s.dir == 1 ? ta.lowest(low, scanLen2) <= s.zoneMid : ta.highest(high, scanLen2) >= s.zoneMid
+                zoneStart2 = s.dir == 1 ? s.zoneHigh : s.zoneLow
+                s.touchedZone := s.dir == 1 ? ta.lowest(low, scanLen2) <= zoneStart2 : ta.highest(high, scanLen2) >= zoneStart2
                 s.state := 2
                 if showZone
                     s.zoneBox := box.new(bar_index, s.zoneHigh, bar_index, s.zoneLow, border_color=color.orange, bgcolor=color.new(color.orange, 85))
@@ -427,14 +428,19 @@ if numSetups > 0
             if showZone and not na(s.zoneBox)
                 box.set_right(s.zoneBox, bar_index)   // keep stretching the zone box while we wait
 
-            // Has price traded into the zone (reached the midpoint) at least once?
-            // Sticky -- once true it stays true even if price moves away again.
-            touched = s.dir == 1 ? low <= s.zoneMid : high >= s.zoneMid
+            // Has price traded into the zone at least once? Only needs to reach the
+            // zone's NEAR edge (its start, where price first arrives) -- the FVG's own
+            // gap boundary when one was found, or the range's own boundary when falling
+            // back to the range -- not all the way to the midpoint. Sticky -- once true
+            // it stays true even if price moves away again.
+            zoneStart = s.dir == 1 ? s.zoneHigh : s.zoneLow
+            touched = s.dir == 1 ? low <= zoneStart : high >= zoneStart
             if touched
                 s.touchedZone := true
 
             // A confirmation candle closes back beyond the zone's midpoint, in the
             // SAME direction as the original breakout (i.e. the pullback is over).
+            // (Unchanged -- only the touch trigger above moved to the zone's start.)
             confirmBull = close > open and close > s.zoneMid
             confirmBear = close < open and close < s.zoneMid
             confirmation = s.touchedZone and (s.dir == 1 ? confirmBull : confirmBear)
