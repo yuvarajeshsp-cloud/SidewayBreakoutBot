@@ -43,7 +43,10 @@ tp3R = input.float(3.0, "TP3 (R multiple)", minval=0.1, group=grpTP)
 grpSession = "Trading Session"
 useSessionFilter = input.bool(true, "Restrict Entries to Session", group=grpSession)         // range detection, breakout watching, and retracement waiting all still run 24/7 -- this only gates the final entry
 sessionWindow = input.session("1000-2200", "Session", group=grpSession)                      // 24-hour "HHMM-HHMM" -- default is 10:00 AM to 10:00 PM
-sessionTz = input.string("Asia/Kolkata", "Session Timezone", group=grpSession)                // IANA timezone name the session above is interpreted in (default IST)
+sessionTz = input.timezone("Asia/Kolkata", "Session Timezone", group=grpSession)              // timezone the session above is interpreted in (default IST) -- a real dropdown, so it can't be typo'd into something time() rejects
+// input.timezone()'s "Exchange" choice isn't itself a valid time() timezone -- it's a sentinel
+// meaning "use the chart symbol's own exchange timezone," so translate it to syminfo.timezone.
+sessionTzResolved = sessionTz == "Exchange" ? syminfo.timezone : sessionTz
 
 grpVis = "Visuals"
 showZone      = input.bool(true, "Show Retracement Zone", group=grpVis)                     // draw the orange box marking the FVG/range retracement zone while waiting for entry
@@ -131,7 +134,7 @@ atrVal = ta.atr(atrLength)
 
 // time(...) returns this bar's timestamp if it falls inside sessionWindow (in sessionTz),
 // or na otherwise -- the standard Pine idiom for a session filter.
-inSession = not useSessionFilter or not na(time(timeframe.period, sessionWindow, sessionTz))
+inSession = not useSessionFilter or not na(time(timeframe.period, sessionWindow, sessionTzResolved))
 
 // Scans the breakout leg for the nearest FVG; if none is found, falls back to
 // a retracement touch of the sideways zone itself (its high/low). Returns
