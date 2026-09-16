@@ -61,9 +61,10 @@ tp3Pct = math.max(0.0, 100.0 - tp1Pct - tp2Pct)
 grpSession = "Trading Session"
 useSessionFilter = input.bool(true, "Restrict Entries to Session", group=grpSession)         // range detection, breakout watching, and retracement waiting all still run 24/7 -- this only gates the final entry
 sessionWindow = input.session("1000-2200", "Session", group=grpSession)                      // 24-hour "HHMM-HHMM" -- default is 10:00 AM to 10:00 PM
-sessionTz = input.timezone("Asia/Kolkata", "Session Timezone", group=grpSession)              // timezone the session above is interpreted in (default IST) -- a real dropdown, so it can't be typo'd into something time() rejects
-// input.timezone()'s "Exchange" choice isn't itself a valid time() timezone -- it's a sentinel
-// meaning "use the chart symbol's own exchange timezone," so translate it to syminfo.timezone.
+sessionTz = input.string("Asia/Kolkata", "Session Timezone", group=grpSession)                // IANA name (e.g. "Asia/Kolkata"), UTC/GMT offset (e.g. "GMT+0530"), or the special value "Exchange" to use the chart symbol's own timezone
+// "Exchange" isn't itself a valid time() timezone -- it's a sentinel some traders expect to
+// type (mirroring the "Exchange time zone" choice other indicators offer via a dropdown),
+// so translate it to syminfo.timezone instead of letting it crash time() below.
 sessionTzResolved = sessionTz == "Exchange" ? syminfo.timezone : sessionTz
 
 grpVis = "Visuals"
