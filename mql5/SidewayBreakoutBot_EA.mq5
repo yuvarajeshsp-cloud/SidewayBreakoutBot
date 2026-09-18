@@ -1016,7 +1016,10 @@ void FinalizeTrade(SSetup &s, string exitReason, int tpsReached)
    ArrayResize(g_history, n + 1);
    g_history[n] = rec;
 
-   if(exitReason == "SL" && s.flipsUsed < InpMaxSlFlips)
+   // Matches Pine: the flip re-arm fires on ANY stop-out -- the sticky
+   // stopWasHit flag there doesn't distinguish the original SL from a
+   // breakeven-adjusted stop, so both exit reasons re-watch the range.
+   if((exitReason == "SL" || exitReason == "Breakeven") && s.flipsUsed < InpMaxSlFlips)
    {
       SSetup flip;
       ZeroMemory(flip);
