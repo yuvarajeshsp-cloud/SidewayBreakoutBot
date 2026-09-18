@@ -938,10 +938,40 @@ void ManageOpenPosition(SSetup &s, double bid, double ask)
 {
    if(!PositionSelectByTicket(s.posTicket))
    {
-      // Closed by the backstop SL, manual intervention, etc. Record what we
-      // can and stop tracking it -- we can't classify this precisely since
-      // we didn't initiate the close ourselves.
-      FinalizeTrade(s, "SL", 0);
+      // Closed by the backstop SL, manual intervention, etc. -- s.cashPnLSoFar/
+      // rWeightedSoFar so far only reflect whatever partial closes WE ourselves
+      // made before losing track of it; the deal that actually finished the
+      // position (and its real profit/swap/commission) was never read. Since
+      // the position is now fully closed, its whole deal history is final, so
+      // recompute both totals fresh from it instead of under-reporting.
+      double riskDistance = MathAbs(s.entryPrice - s.slPrice);
+      if(riskDistance <= 0) riskDistance = 1e-10;
+      double totalCash = 0.0, rWeighted = 0.0, lastOutPrice = s.entryPrice;
+      bool sawOutDeal = false;
+      if(HistorySelectByPosition(s.posTicket))
+      {
+         int nDeals = HistoryDealsTotal();
+         for(int i = 0; i < nDeals; i++)
+         {
+            ulong dTicket = HistoryDealGetTicket(i);
+            if(dTicket == 0) continue;
+            long entryType = HistoryDealGetInteger(dTicket, DEAL_ENTRY);
+            if(entryType != DEAL_ENTRY_OUT && entryType != DEAL_ENTRY_OUT_BY) continue;
+            totalCash += HistoryDealGetDouble(dTicket, DEAL_PROFIT)
+                       + HistoryDealGetDouble(dTicket, DEAL_SWAP)
+                       + HistoryDealGetDouble(dTicket, DEAL_COMMISSION);
+            double dealVol   = HistoryDealGetDouble(dTicket, DEAL_VOLUME);
+            double dealPrice = HistoryDealGetDouble(dTicket, DEAL_PRICE);
+            double fraction  = (s.qtyAtEntry > 0) ? (dealVol / s.qtyAtEntry) : 0.0;
+            rWeighted += fraction * ((dealPrice - s.entryPrice) / riskDistance * s.dir);
+            lastOutPrice = dealPrice;
+            sawOutDeal = true;
+         }
+      }
+      s.cashPnLSoFar   = totalCash;
+      s.rWeightedSoFar = rWeighted;
+      string reason = (sawOutDeal && lastOutPrice == s.entryPrice) ? "Breakeven" : "SL";
+      FinalizeTrade(s, reason, (s.tp1Filled ? 1 : 0) + (s.tp2Filled ? 1 : 0));
       return;
    }
 
