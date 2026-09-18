@@ -442,7 +442,11 @@ if numSetups > 0
             bullBreak = math.min(open, close) > s.lockedHigh and passesBody
             bearBreak = math.max(open, close) < s.lockedLow and passesBody
 
-            if bullBreak or bearBreak
+            // barstate.isconfirmed: this candle's close is still live/changing on every
+            // tick until the bar actually finishes -- without this gate, a breakout could
+            // fire mid-candle on a price that later pulls back before the close, only for
+            // the state change to have already stuck (Pine doesn't undo it next tick).
+            if (bullBreak or bearBreak) and barstate.isconfirmed
                 s.dir := bullBreak ? 1 : -1
                 s.breakoutTime := time
                 s.breakoutBar := bar_index
@@ -492,35 +496,40 @@ if numSetups > 0
             passesBody4 = not useBodyFilter or bodySize4 >= bodyATRMult * atrVal
             confirmed = s.dir == 1 ? math.min(open, close) > s.lockedHigh and passesBody4 : math.max(open, close) < s.lockedLow and passesBody4
 
-            if confirmed
-                s.breakoutTime := time
-                [zH, zL] = f_findZone(s.dir, s.lockBar, s.lockedHigh, s.lockedLow)
-                s.zoneHigh := zH
-                s.zoneLow := zL
-                s.zoneMid := (zH + zL) / 2
-                // The scanned leg spans the original breakout candle through this
-                // confirmation candle (breakoutBar, NOT lockBar -- lockBar predates the
-                // entire state-1 watching period, during which price was still inside
-                // the range by definition, which would trivially backfill touchedZone
-                // true from stale pre-breakout price action rather than a genuine
-                // post-breakout pullback), so it can include a pullback that already
-                // reached the zone -- seed touchedZone from that history instead of
-                // always starting at false.
-                scanLen2 = math.max(math.min(bar_index - s.breakoutBar + 1, zoneScanMaxBars), 1)
-                zoneStart2 = s.dir == 1 ? s.zoneHigh : s.zoneLow
-                s.touchedZone := s.dir == 1 ? ta.lowest(low, scanLen2) <= zoneStart2 : ta.highest(high, scanLen2) >= zoneStart2
-                s.state := 2
-                if showZone
-                    s.zoneBox := box.new(bar_index, s.zoneHigh, bar_index, s.zoneLow, border_color=color.orange, bgcolor=color.new(color.orange, 85))
-                alert("Sideway Breakout Bot: " + (s.dir == 1 ? "bullish" : "bearish") + " breakout confirmed, zone identified", alert.freq_once_per_bar_close)
-            else
-                // Candle failed to also clear the range -- treat the whole breakout as a
-                // fakeout. Reset direction and go back to state 1, still watching the SAME
-                // locked range (no need to wait for a brand-new consolidation).
-                s.dir := 0
-                s.breakoutTime := na
-                s.state := 1
-                alert("Sideway Breakout Bot: breakout failed confirmation (fakeout), watching for a new breakout", alert.freq_once_per_bar_close)
+            // Wait for this candle to actually finish before judging it -- `confirmed`
+            // reads open/close, which are still live and changing on every tick until
+            // the bar closes. Without this gate, an intrabar reading could get treated
+            // as a fakeout (or a confirmation) that the candle's real close never backs.
+            if barstate.isconfirmed
+                if confirmed
+                    s.breakoutTime := time
+                    [zH, zL] = f_findZone(s.dir, s.lockBar, s.lockedHigh, s.lockedLow)
+                    s.zoneHigh := zH
+                    s.zoneLow := zL
+                    s.zoneMid := (zH + zL) / 2
+                    // The scanned leg spans the original breakout candle through this
+                    // confirmation candle (breakoutBar, NOT lockBar -- lockBar predates the
+                    // entire state-1 watching period, during which price was still inside
+                    // the range by definition, which would trivially backfill touchedZone
+                    // true from stale pre-breakout price action rather than a genuine
+                    // post-breakout pullback), so it can include a pullback that already
+                    // reached the zone -- seed touchedZone from that history instead of
+                    // always starting at false.
+                    scanLen2 = math.max(math.min(bar_index - s.breakoutBar + 1, zoneScanMaxBars), 1)
+                    zoneStart2 = s.dir == 1 ? s.zoneHigh : s.zoneLow
+                    s.touchedZone := s.dir == 1 ? ta.lowest(low, scanLen2) <= zoneStart2 : ta.highest(high, scanLen2) >= zoneStart2
+                    s.state := 2
+                    if showZone
+                        s.zoneBox := box.new(bar_index, s.zoneHigh, bar_index, s.zoneLow, border_color=color.orange, bgcolor=color.new(color.orange, 85))
+                    alert("Sideway Breakout Bot: " + (s.dir == 1 ? "bullish" : "bearish") + " breakout confirmed, zone identified", alert.freq_once_per_bar_close)
+                else
+                    // Candle failed to also clear the range -- treat the whole breakout as a
+                    // fakeout. Reset direction and go back to state 1, still watching the SAME
+                    // locked range (no need to wait for a brand-new consolidation).
+                    s.dir := 0
+                    s.breakoutTime := na
+                    s.state := 1
+                    alert("Sideway Breakout Bot: breakout failed confirmation (fakeout), watching for a new breakout", alert.freq_once_per_bar_close)
 
         // ============================================================
         // STATE 5 -- impulse breakout confirmed: skip the wait, enter next candle
@@ -644,7 +653,12 @@ if numSetups > 0
             invalidated = s.dir == 1 ? low < s.lockedLow : high > s.lockedHigh
             minutesSinceBreakout = (time - s.breakoutTime) / 60000.0   // wall-clock time, not bar count, so the timeout means the same thing on any chart timeframe
 
-            if confirmation and inSession
+            // barstate.isconfirmed: confirmBull/confirmBear read this candle's close,
+            // which is still live and changing on every tick until the bar actually
+            // finishes -- a wick reaching the zone (touched, above) is fine to react to
+            // live, but the CONFIRMATION close must wait for the candle to really close,
+            // or an intrabar reading that never holds could still lock in the entry.
+            if confirmation and inSession and barstate.isconfirmed
                 // ---- Entry! Compute SL/TP levels and open the (simulated) trade. ----
                 // (A confirmation outside the session window just doesn't enter -- the
                 // setup stays in state 2 and can still enter later if price re-confirms,
