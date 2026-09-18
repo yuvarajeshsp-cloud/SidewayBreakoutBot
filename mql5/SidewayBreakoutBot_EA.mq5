@@ -499,6 +499,37 @@ bool ComputeFreshRange(double &outRMax, double &outRMin, datetime &outLockTime)
    return(true);
 }
 
+// Purely cosmetic, called every tick (unlike ComputeFreshRange, which only
+// runs once per new bar for the actual detection/arming decision -- see
+// header note 4). Matches Pine's own split exactly: LuxAlgo's box visually
+// extends and recolors live, every tick, using the CURRENTLY FORMING bar's
+// close (bx.set_right(n) in the "else if rCount == 0" branch, and the
+// close > bx.get_top() / close < bx.get_bottom() recoloring block below it)
+// -- only the NEW-RANGE DETECTION itself needed deferring to a confirmed
+// bar, not this visual reactivity. rMax/rMin (g_rangeTop/g_rangeBottom) are
+// never touched here, exactly like Pine: only the right edge and the color
+// react live; the box's actual bounds only change on a real detection or
+// re-extension event, both handled by ComputeFreshRange() above.
+void UpdateRangeVisualLive()
+{
+   if(!InpShowRangeBox || !g_rangeActive) return;
+
+   double rAtr0 = GetAtrRange(0) * InpRangeMult;
+   double ma0   = GetSMA(0, InpRangeLength);
+   int rCount0 = 0;
+   for(int i = 0; i < InpRangeLength; i++)
+      if(MathAbs(iClose(_Symbol, _Period, i) - ma0) > rAtr0) rCount0++;
+
+   if(rCount0 == 0)
+      g_rangeRightTime = iTime(_Symbol, _Period, 0);
+
+   double liveClose = iClose(_Symbol, _Period, 0);
+   if(liveClose > g_rangeTop)      g_rangeState = 1;
+   else if(liveClose < g_rangeBottom) g_rangeState = -1;
+
+   UpdateRangeBox();
+}
+
 //====================================================================
 // STATE MACHINE -- NEW-BAR LOGIC (states 1, 4, 5-entry, 2-confirm,
 // arm new setup). Uses the just-closed bar (shift 1) throughout,
@@ -778,6 +809,8 @@ void ExecuteEntry(SSetup &s, double entryPrice, double slPrice, double r, bool i
 
 void ProcessPerTick()
 {
+   UpdateRangeVisualLive();
+
    double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
    double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
    double curLow  = iLow(_Symbol, _Period, 0);
