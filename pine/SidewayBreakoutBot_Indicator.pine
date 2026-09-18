@@ -423,16 +423,10 @@ if numSetups > 0
                 if isImpulse
                     s.isImpulse := true
                     s.impulsePct := breakoutDist / rangeHeight * 100
-                    // Precompute both impulse-entry SL candidates now, right at the
-                    // breakout bar -- STATE 5 picks whichever of the two ends up giving
-                    // the WIDER (bigger) stop once the actual entry price is known:
-                    // the zone's own midpoint (FVG or range fallback, same as a normal
-                    // entry's target), or the high/low of the single candle right before
-                    // this breakout candle (the base of the impulse move).
-                    [zH, zL] = f_findZone(s.dir, s.lockBar, s.lockedHigh, s.lockedLow)
-                    s.zoneHigh := zH
-                    s.zoneLow := zL
-                    s.zoneMid := (zH + zL) / 2
+                    // Precompute the impulse-entry SL level now, right at the breakout
+                    // bar: the wick (low for a long, high for a short) of the single
+                    // candle right before this breakout candle -- the base of the
+                    // impulse move.
                     s.preBreakoutLevel := s.dir == 1 ? low[1] : high[1]
                     s.state := 5
                     alert("Sideway Breakout Bot: " + (bullBreak ? "bullish" : "bearish") + " impulse breakout (" + str.tostring(s.impulsePct, "#.#") + "% beyond range), entering next candle", alert.freq_once_per_bar_close)
@@ -508,15 +502,11 @@ if numSetups > 0
             else if inSession
                 // ---- Entry! entryPrice is this candle's open (the very next candle
                 // after the impulse breakout candle) instead of a confirmed retracement
-                // close. The SL is whichever of the two precomputed candidates (zone
-                // midpoint vs. pre-breakout candle extreme) ends up FARTHER from this
-                // entry price -- the wider, more conservative stop. ----
+                // close. The SL sits just beyond the wick of the candle right before
+                // the breakout candle (the base of the impulse move). ----
                 candidateEntry = open
                 buffer = slBufferATRMult * atrVal
-                slFromZone = s.dir == 1 ? s.zoneMid - buffer : s.zoneMid + buffer
-                slFromPreBreak = s.dir == 1 ? s.preBreakoutLevel - buffer : s.preBreakoutLevel + buffer
-                usedZoneSl = math.abs(candidateEntry - slFromZone) >= math.abs(candidateEntry - slFromPreBreak)
-                candidateSl = usedZoneSl ? slFromZone : slFromPreBreak
+                candidateSl = s.dir == 1 ? s.preBreakoutLevel - buffer : s.preBreakoutLevel + buffer
                 r = math.abs(candidateEntry - candidateSl)
 
                 if r <= 0 or (maxSlPips > 0 and r > maxSlPips * pipSize) or f_zoneAlreadyTraded(s.dir, s.lockedHigh, s.lockedLow)
@@ -575,7 +565,7 @@ if numSetups > 0
                     entryInfo5 = (s.dir == 1 ? "LONG" : "SHORT") + " entry\n" +
                          "Range: " + str.tostring(s.lockedLow, format.mintick) + " - " + str.tostring(s.lockedHigh, format.mintick) + "\n" +
                          "Entry mode: Impulse breakout (body " + str.tostring(s.impulsePct, "#.#") + "% beyond range, no retracement wait)\n" +
-                         "SL source: " + (usedZoneSl ? "zone midpoint" : "pre-breakout candle " + (s.dir == 1 ? "low" : "high")) + " (wider of the two candidates)\n" +
+                         "SL source: pre-breakout candle " + (s.dir == 1 ? "low" : "high") + "\n" +
                          "Entry: " + str.tostring(s.entryPrice, format.mintick) + "   SL: " + str.tostring(s.slPrice, format.mintick) + "\n" +
                          "TP1: " + str.tostring(s.tp1Price, format.mintick) +
                          (numTPs >= 2 ? "   TP2: " + str.tostring(s.tp2Price, format.mintick) : "") +
