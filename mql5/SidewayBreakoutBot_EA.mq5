@@ -111,8 +111,9 @@ input bool   InpShowHitMarkers      = true;   // Show TP1/TP2/TP3/SL Hit Dots (f
 input bool   InpShowInfoMarker      = true;   // Show "i" Info Marker at Entry (hover for why the entry fired -- like the Pine indicator)
 
 input group "Dashboard"
-input bool   InpShowDashboard        = true;      // Show Trade Summary Dashboard (chart comment)
+input bool   InpShowDashboard        = true;      // Show Trade Summary Dashboard
 input string InpDashboardPeriod      = "All Time"; // Stats Period: Today / This Week / This Month / All Time
+input string InpDashboardPosition    = "Top Right"; // Dashboard Position: Top Right / Top Left / Bottom Right / Bottom Left
 
 input group "Misc"
 input ulong  InpMagic               = 20240601;  // Magic Number
@@ -253,7 +254,7 @@ void OnDeinit(const int reason)
 {
    if(g_hAtrRange != INVALID_HANDLE) IndicatorRelease(g_hAtrRange);
    if(g_hAtrMain  != INVALID_HANDLE) IndicatorRelease(g_hAtrMain);
-   Comment("");
+   ObjectsDeleteAll(0, "SBB_dash_");
 }
 
 //====================================================================
@@ -1130,8 +1131,86 @@ void FinalizeTrade(SSetup &s, string exitReason, int tpsReached)
 }
 
 //====================================================================
-// DASHBOARD (chart Comment -- see Pine's simplified trade-summary table)
+// DASHBOARD -- a corner-anchored panel of chart objects, matching the
+// Pine indicator's table.new() trade-summary dashboard: same 12 rows,
+// same gray header bar over a dark panel, same per-value color coding
+// (red for SL, lime/green for TP hits, red/green for the R and $/%
+// totals depending on sign), and the same 4 position choices.
 //====================================================================
+
+#define DASH_ROWS 11   // Total Trades..Gain% (excludes the header row)
+#define DASH_ROW_H 16
+#define DASH_HEADER_H 18
+#define DASH_PANEL_W 190
+#define DASH_INSET_X 8
+#define DASH_INSET_Y 8
+
+ENUM_BASE_CORNER GetDashCorner()
+{
+   if(InpDashboardPosition == "Top Left")     return(CORNER_LEFT_UPPER);
+   if(InpDashboardPosition == "Bottom Right") return(CORNER_RIGHT_LOWER);
+   if(InpDashboardPosition == "Bottom Left")  return(CORNER_LEFT_LOWER);
+   return(CORNER_RIGHT_UPPER); // "Top Right" (default), matches Pine's f_dashPosition else-branch
+}
+
+void SetDashRect(string name, ENUM_BASE_CORNER corner, int x, int y, int w, int h, color bg, color border)
+{
+   if(ObjectFind(0, name) < 0)
+   {
+      ObjectCreate(0, name, OBJ_RECTANGLE_LABEL, 0, 0, 0);
+      ObjectSetInteger(0, name, OBJPROP_BORDER_TYPE, BORDER_FLAT);
+      ObjectSetInteger(0, name, OBJPROP_BACK, false);
+   }
+   ObjectSetInteger(0, name, OBJPROP_CORNER, corner);
+   ObjectSetInteger(0, name, OBJPROP_XDISTANCE, x);
+   ObjectSetInteger(0, name, OBJPROP_YDISTANCE, y);
+   ObjectSetInteger(0, name, OBJPROP_XSIZE, w);
+   ObjectSetInteger(0, name, OBJPROP_YSIZE, h);
+   ObjectSetInteger(0, name, OBJPROP_BGCOLOR, bg);
+   ObjectSetInteger(0, name, OBJPROP_COLOR, border);
+   ObjectSetInteger(0, name, OBJPROP_WIDTH, 1);
+}
+
+// text: a value measured inward from the panel's OWN left/right edge (never
+// the raw screen edge) -- fromRight=false places it flush with the panel's
+// left edge growing rightward (row labels), fromRight=true places it flush
+// with the panel's right edge growing leftward (values), regardless of which
+// physical screen corner the whole panel is anchored to.
+void SetDashLabel(string name, ENUM_BASE_CORNER corner, int panelX, int panelW, int insetFromEdge,
+                   bool fromRight, int y, string text, color clr)
+{
+   bool cornerIsRight = (corner == CORNER_RIGHT_UPPER || corner == CORNER_RIGHT_LOWER);
+   // xDistance measures from the screen edge the corner refers to. A LEFT-side
+   // corner measures from the chart's left edge (so the panel's own left edge
+   // sits at panelX); a RIGHT-side corner measures from the chart's right edge
+   // (so the panel's own left edge sits at panelX+panelW instead).
+   int x;
+   if(!fromRight)
+      x = cornerIsRight ? (panelX + panelW - insetFromEdge) : (panelX + insetFromEdge);
+   else
+      x = cornerIsRight ? (panelX + insetFromEdge) : (panelX + panelW - insetFromEdge);
+
+   if(ObjectFind(0, name) < 0)
+   {
+      ObjectCreate(0, name, OBJ_LABEL, 0, 0, 0);
+      ObjectSetInteger(0, name, OBJPROP_FONTSIZE, 8);
+   }
+   ObjectSetInteger(0, name, OBJPROP_CORNER, corner);
+   ObjectSetInteger(0, name, OBJPROP_XDISTANCE, x);
+   ObjectSetInteger(0, name, OBJPROP_YDISTANCE, y);
+   ObjectSetInteger(0, name, OBJPROP_ANCHOR, fromRight ? ANCHOR_RIGHT : ANCHOR_LEFT);
+   ObjectSetString(0, name, OBJPROP_TEXT, text);
+   ObjectSetInteger(0, name, OBJPROP_COLOR, clr);
+}
+
+// Row 0 is the header; rows 1..DASH_ROWS are the stat rows -- converts a row
+// index into a y-distance from the panel's OWN top edge, then flips it for a
+// bottom-anchored corner so the header always ends up visually on top.
+int DashRowY(ENUM_BASE_CORNER corner, int panelY, int panelH, int topOffset, int elemH)
+{
+   bool anchorBottom = (corner == CORNER_LEFT_LOWER || corner == CORNER_RIGHT_LOWER);
+   return(anchorBottom ? (panelY + panelH - topOffset - elemH) : (panelY + topOffset));
+}
 
 void UpdateDashboard()
 {
@@ -1162,21 +1241,56 @@ void UpdateDashboard()
    double balance = AccountInfoDouble(ACCOUNT_BALANCE);
    double pct = (balance > 0) ? totalCash / balance * 100.0 : 0.0;
 
-   string txt = "";
-   txt += "Trade Summary (" + InpDashboardPeriod + ")\n";
-   txt += "Total Trades: " + IntegerToString(total) + "\n";
-   txt += "SL: " + IntegerToString(slC) + "\n";
-   txt += "Breakeven (after TP1): " + IntegerToString(be1) + "\n";
-   txt += "Breakeven (after TP2): " + IntegerToString(be2) + "\n";
-   txt += "TP1: " + IntegerToString(tp1) + "\n";
-   txt += "TP2: " + IntegerToString(tp2) + "\n";
-   txt += "TP3: " + IntegerToString(tp3) + "\n";
-   txt += "Stagnant: " + IntegerToString(stag) + "\n";
-   txt += "Total R (Risk/Reward): " + DoubleToString(totalR, 2) + "R\n";
-   txt += "Gain / Loss ($): " + DoubleToString(totalCash, 2) + "\n";
-   txt += "Gain / Loss (%): " + DoubleToString(pct, 2) + "%";
+   // Same color rules as the Pine indicator's table.cell() calls: SL is
+   // always red, TP1/2/3 are always lime/green, and the R/$/% totals are
+   // gray when there's no history yet, else colored by their own sign.
+   color labelColor = clrWhite;
+   color posColor    = clrLime;
+   color negColor    = clrRed;
+   color totalRColor = (total == 0) ? labelColor : (totalR   >= 0 ? posColor : negColor);
+   color gainColor   = (total == 0) ? labelColor : (totalCash >= 0 ? posColor : negColor);
 
-   Comment(txt);
+   ENUM_BASE_CORNER corner = GetDashCorner();
+   int panelW = DASH_PANEL_W;
+   int panelH = DASH_HEADER_H + DASH_ROWS * DASH_ROW_H + 6;
+
+   SetDashRect("SBB_dash_bg", corner, DASH_INSET_X, DASH_INSET_Y, panelW, panelH,
+               C'20,20,20', clrGray);
+   SetDashRect("SBB_dash_hdr", corner, DASH_INSET_X, DashRowY(corner, DASH_INSET_Y, panelH, 0, DASH_HEADER_H),
+               panelW, DASH_HEADER_H, C'70,70,70', clrGray);
+   SetDashLabel("SBB_dash_hdr_txt", corner, DASH_INSET_X, panelW, 8, false,
+                DashRowY(corner, DASH_INSET_Y, panelH, 0, DASH_HEADER_H) + 4,
+                "Trade Summary (" + InpDashboardPeriod + ")", labelColor);
+
+   string labels[DASH_ROWS] = {"Total Trades", "SL", "Breakeven (after TP1)", "Breakeven (after TP2)",
+                                "TP1", "TP2", "TP3", "Stagnant", "Total R (Risk/Reward)",
+                                "Gain / Loss ($)", "Gain / Loss (%)"};
+   string values[DASH_ROWS];
+   values[0] = IntegerToString(total);
+   values[1] = IntegerToString(slC);
+   values[2] = IntegerToString(be1);
+   values[3] = IntegerToString(be2);
+   values[4] = IntegerToString(tp1);
+   values[5] = IntegerToString(tp2);
+   values[6] = IntegerToString(tp3);
+   values[7] = IntegerToString(stag);
+   values[8] = DoubleToString(totalR, 2) + "R";
+   values[9] = DoubleToString(totalCash, 2);
+   values[10]= DoubleToString(pct, 2) + "%";
+
+   color valueColors[DASH_ROWS] =
+   {
+      labelColor, negColor, labelColor, labelColor,
+      posColor, posColor, posColor, labelColor,
+      totalRColor, gainColor, gainColor
+   };
+
+   for(int r = 0; r < DASH_ROWS; r++)
+   {
+      int y = DashRowY(corner, DASH_INSET_Y, panelH, DASH_HEADER_H + r * DASH_ROW_H, DASH_ROW_H) + 3;
+      SetDashLabel("SBB_dash_lbl" + IntegerToString(r), corner, DASH_INSET_X, panelW, 8, false, y, labels[r], labelColor);
+      SetDashLabel("SBB_dash_val" + IntegerToString(r), corner, DASH_INSET_X, panelW, 8, true,  y, values[r], valueColors[r]);
+   }
 }
 
 //====================================================================

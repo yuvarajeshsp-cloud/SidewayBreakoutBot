@@ -4,9 +4,11 @@
 feature set: range detection, breakout/fakeout/impulse entries, FVG
 retracement zones, R-multiple SL/TP1/TP2/TP3 with partial closes and
 breakeven, SL-flip re-watch, stagnation close, session filter, and concurrent
-setups — plus a chart-comment dashboard mirroring the Pine trade-summary
-table (SL / Breakeven-after-TP1 / Breakeven-after-TP2 / TP1 / TP2 / TP3 /
-Stagnant counts, total R, and real gain/loss in $ and %).
+setups — plus an on-chart dashboard panel mirroring the Pine trade-summary
+table, position-configurable to any corner (SL / Breakeven-after-TP1 /
+Breakeven-after-TP2 / TP1 / TP2 / TP3 / Stagnant counts, total R, and real
+gain/loss in $ and %, color-coded the same way as the Pine indicator's
+table: red for SL, lime/green for TP hits).
 
 ## Install
 
