@@ -10,7 +10,7 @@ strategy("Sideway Breakout Bot [Strategy]", overlay=true, initial_capital=10000,
 grpRange = "Range Detector"
 rangeLength = input.int(20, "Minimum Range Length", minval=2, group=grpRange)              // how many bars must stay inside the ATR band before a "sideways" range is recognized
 rangeMult   = input.float(1.0, "Range Width", minval=0, step=0.1, group=grpRange)          // multiplies the ATR band below -- bigger = tolerates more noise as still "sideways"
-rangeAtrLen = input.int(500, "Range ATR Length", minval=1, group=grpRange)                 // ATR length used only for sizing the range band (separate from the SL/filter ATR below)
+rangeAtrLen = input.int(200, "Range ATR Length", minval=1, group=grpRange)                 // ATR length used only for sizing the range band (separate from the SL/filter ATR below) -- shortened from 500 for 1-min charts so it tracks the CURRENT volatility regime instead of blending in multiple sessions' worth of history
 upCss       = input.color(#089981, "Broken Upward", group=grpRange)                        // range box/line color once price closes above it
 dnCss       = input.color(#f23645, "Broken Downward", group=grpRange)                      // range box/line color once price closes below it
 unbrokenCss = input.color(#2157f3, "Unbroken", group=grpRange)                             // range box/line color while still intact
@@ -20,14 +20,14 @@ maxConcurrentSetups = input.int(3, "Max Concurrent Setups", minval=1, maxval=10,
 maxSlFlips = input.int(1, "Max SL Flips per Range", minval=0, maxval=5, group=grpRange)     // after a stop-loss, how many times the SAME range may be re-watched for the opposite breakout (0 = never)
 
 grpBreak = "Breakout"
-atrLength         = input.int(14, "ATR Length (SL/Filters)", minval=1, group=grpBreak)      // ATR used for the SL buffer and the body-size filter (not the range band above)
-useBodyFilter     = input.bool(false, "Require Min Body Size", group=grpBreak)              // optional extra filter: reject small/indecisive breakout candles
+atrLength         = input.int(20, "ATR Length (SL/Filters)", minval=1, group=grpBreak)      // ATR used for the SL buffer and the body-size filter (not the range band above) -- lengthened from 14 for 1-min charts so a single noisy/spiky bar doesn't swing it as much
+useBodyFilter     = input.bool(true, "Require Min Body Size", group=grpBreak)               // optional extra filter: reject small/indecisive breakout candles -- default on for 1-min, where thin-bodied indecision candles are common and easily produce false breakouts
 bodyATRMult       = input.float(0.5, "Min Body Size (x ATR)", minval=0, group=grpBreak)     // how big (in ATR) a candle's body must be to count, when the filter above is on
 useFakeoutFilter  = input.bool(true, "Require Confirmation Candle After Breakout", group=grpBreak) // require a 2nd candle to also clear the range before trusting the breakout
 
 grpImpulse = "Impulse Breakout"
 enableImpulseEntry = input.bool(true, "Enable Impulse Breakout Entry", group=grpImpulse)     // skip the fakeout-confirmation/retracement wait entirely when the breakout candle's body already closes far enough beyond the range, and just enter on the very next candle instead
-impulseThresholdPct = input.float(25.0, "Impulse Threshold (% of range beyond boundary)", minval=0, step=1, group=grpImpulse) // how far (as a % of the range's own height) the breakout candle's body must close beyond the boundary to count as an impulse move
+impulseThresholdPct = input.float(40.0, "Impulse Threshold (% of range beyond boundary)", minval=0, step=1, group=grpImpulse) // how far (as a % of the range's own height) the breakout candle's body must close beyond the boundary to count as an impulse move -- raised from 25 for 1-min, where ordinary noise spikes can otherwise overshoot a tight range by 25% without real conviction behind the move
 
 grpZone = "Retracement Zone"
 zoneScanMaxBars  = input.int(15, "Zone Scan Lookback (bars)", minval=3, group=grpZone)       // how far back (from the breakout) to search for a Fair Value Gap
@@ -36,7 +36,7 @@ retraceTimeoutMin = input.int(30, "Retracement Timeout (minutes)", minval=1, gro
 
 grpRisk = "Risk Management"
 riskPercent     = input.float(1.0, "Risk % per Trade", minval=0.01, group=grpRisk)          // % of current equity risked on each new trade
-slBufferATRMult = input.float(0.1, "SL Buffer (x ATR)", minval=0, group=grpRisk)             // extra cushion (in ATR) added beyond the opposite range boundary for the stop-loss
+slBufferATRMult = input.float(0.3, "SL Buffer (x ATR)", minval=0, group=grpRisk)             // extra cushion (in ATR) added beyond the opposite range boundary for the stop-loss -- widened from 0.1 for 1-min, where that thin a buffer left stops prone to getting clipped by ordinary noise/spread
 stagnationBars  = input.int(30, "Close Stagnant Trade After (bars, 0=off)", minval=0, group=grpRisk) // close a trade early if price never moves in its favor for this many bars (0 = off)
 maxSlPips = input.float(200, "Max SL Distance (pips, 0=off)", minval=0, group=grpRisk)       // skip the entry entirely if the SL would be further than this many pips away
 pipSize = input.float(0.1, "Pip Size (price per pip)", minval=0.0000001, group=grpRisk)      // how much price one "pip" is on this symbol -- e.g. 0.1 for most indices, 0.0001 for most FX pairs, 0.01 for JPY pairs
