@@ -705,7 +705,16 @@ void ProcessNewBar()
       double r = MathAbs(entryOpen - candidateSl);
       bool slTooWide = InpMaxSlPips > 0 && r > InpMaxSlPips * InpPipSize;
 
-      if(r <= 0 || slTooWide || IsZoneAlreadyTraded(s.dir, s.lockedHigh, s.lockedLow))
+      // Matches Pine's invalidated5 check, which runs on this same bar's own
+      // low/high BEFORE it ever takes the entry (Pine only evaluates once
+      // this bar has fully closed, so a bar that gapped straight through the
+      // range never gets entered). This bar has only just opened here (shift
+      // 0, first tick), so its low/high both still equal its open -- checking
+      // against the open is the earliest equivalent test available live.
+      bool invalidated5 = (s.dir == 1) ? (iLow(_Symbol, _Period, 0) < s.lockedLow)
+                                        : (iHigh(_Symbol, _Period, 0) > s.lockedHigh);
+
+      if(r <= 0 || slTooWide || invalidated5 || IsZoneAlreadyTraded(s.dir, s.lockedHigh, s.lockedLow))
       {
          RemoveSetupAt(idx);
          continue;
