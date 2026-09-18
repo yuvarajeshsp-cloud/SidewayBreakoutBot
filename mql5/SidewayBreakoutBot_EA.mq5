@@ -587,7 +587,9 @@ void ProcessNewBar()
                DrawZoneBox(s);
             }
          }
-         else if(BarsSince(s.lockTime) > InpMaxBarsWatch)
+         // "-1": BarsSince() is relative to the NEW bar that just started (shift 0),
+         // one bar ahead of Pine's bar_index (the just-closed bar this logic mirrors).
+         else if((BarsSince(s.lockTime) - 1) > InpMaxBarsWatch)
          {
             removeThis = true;
          }
@@ -613,7 +615,11 @@ void ProcessNewBar()
             // otherwise this window is far too short and backfills touchedZone
             // from almost nothing, exactly the bug the Pine version already hit
             // and fixed once before.
-            int scanLen2 = (int)MathMax(MathMin(BarsSince(s.breakoutBarTime) + 1, InpZoneScanMaxBars), 1);
+            // NOTE: no "+1" here -- Pine's own "+1" (bar_index - s.breakoutBar + 1)
+            // exactly cancels the standing -1 offset between a raw BarsSince()
+            // (relative to the NEW bar that just started, shift 0) and Pine's
+            // bar_index (the just-closed confirmation bar, shift 1/base here).
+            int scanLen2 = (int)MathMax(MathMin(BarsSince(s.breakoutBarTime), InpZoneScanMaxBars), 1);
             bool touchedSeed = false;
             for(int i = 0; i < scanLen2; i++)
             {
@@ -955,7 +961,9 @@ void ManageOpenPosition(SSetup &s, double bid, double ask)
    // ---- Stagnation ----
    if(InpStagnationBars > 0 && !s.leftEntry)
    {
-      int barsSinceEntry = BarsSince(s.entryTime);
+      // "-1": this runs every tick against the still-forming bar (shift 0), one
+      // bar ahead of Pine's own bar-close-only evaluation of the same formula.
+      int barsSinceEntry = BarsSince(s.entryTime) - 1;
       if(barsSinceEntry >= InpStagnationBars)
       {
          PartialClose(s, 100.0, closePrice, riskDistance);
