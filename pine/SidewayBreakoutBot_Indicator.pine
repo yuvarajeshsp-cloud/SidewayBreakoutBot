@@ -60,14 +60,12 @@ showTPLabels  = input.bool(true, "Show TP1/TP2/TP3/SL Hit Markers", group=grpVis
 minWidthBars = input.int(30, "Minimum Position Width (bars)", minval=1, group=grpVis)        // the risk/reward boxes and TP dots start this many bars wide instead of a 1-bar sliver, so a brand-new entry is visible right away
 fadeBands = 6   // number of stacked bands used to fade each risk/reward zone from solid (at entry) to transparent (at SL/TP) -- more bands = smoother gradient
 
-grpDash = "Performance Dashboard"
-showDashboard = input.bool(true, "Show Performance Dashboard", group=grpDash)                // on-chart table summarizing every closed (simulated) trade's SL/TP outcome
+grpDash = "Trade Summary Dashboard"
+showDashboard = input.bool(true, "Show Trade Summary Dashboard", group=grpDash)              // on-chart table: trade counts by outcome, plus total R and gain/loss
 dashboardPeriod = input.string("All Time", "Stats Period", options=["Today", "This Week", "This Month", "All Time"], group=grpDash) // "Today"/"This Week"/"This Month" are ROLLING windows (last 1/7/30 days back from the most recent bar), not calendar-aligned periods -- keeps this consistent across timeframes/timezones
 dashboardPosition = input.string("Top Right", "Dashboard Position", options=["Top Right", "Top Left", "Bottom Right", "Bottom Left"], group=grpDash)
-showScenarioTable = input.bool(true, "Show Scenario/Expectancy Table", group=grpDash)          // buckets closed trades by how many TPs they reached and shows real avg R/cash per bucket, plus overall expectancy -- uses the same Stats Period filter above
-scenarioBalance   = input.float(10000.0, "Account Balance (for cash column)", minval=0, group=grpDash) // purely for converting R into an illustrative cash figure -- this indicator has no real position sizing
-scenarioRiskPct   = input.float(1.0, "Risk % per Trade (for cash column)", minval=0, step=0.1, group=grpDash)
-scenarioPosition  = input.string("Bottom Right", "Scenario Table Position", options=["Top Right", "Top Left", "Bottom Right", "Bottom Left"], group=grpDash)
+dashBalance = input.float(10000.0, "Account Balance (for gain/loss $ and %)", minval=0, group=grpDash) // purely for converting R into an illustrative cash figure and % -- this indicator has no real position sizing
+dashRiskPct = input.float(1.0, "Risk % per Trade (for gain/loss $ and %)", minval=0, step=0.1, group=grpDash)
 
 // ───────────────────────────── Range Detector (LuxAlgo) ─────────────────────────────
 // This whole block just decides: is price currently "sideways"? It draws one evolving
@@ -803,10 +801,11 @@ alertcondition(tp2HitSignal, "TP2 Hit", "Sideway Breakout Bot: TP2 hit")
 alertcondition(tp3HitSignal, "TP3 Hit", "Sideway Breakout Bot: TP3 hit, trade closed")
 alertcondition(stagnantSignal, "Stagnant Trade Closed", "Sideway Breakout Bot: trade closed early due to stagnation")
 
-// ───────────────────────────── Performance Dashboard ─────────────────────────────
-// Pure read-out of tradeHistory above -- summarizes every closed trade's SL/TP
-// outcome so far, filtered to the selected rolling window. Has no effect on any
-// setup's logic; only (re)draws on the last bar to avoid repainting every candle.
+// ───────────────────────────── Trade Summary Dashboard ─────────────────────────────
+// Pure read-out of tradeHistory above -- straight counts by outcome (SL, breakeven
+// after TP1/TP2, TP1/TP2/TP3, stagnant), plus total R and an illustrative gain/loss
+// in cash and % of the account balance above. Filtered to the selected rolling
+// window. Has no effect on any setup's logic; only (re)draws on the last bar.
 f_dashPosition(p) =>
     p == "Top Left" ? position.top_left : p == "Bottom Right" ? position.bottom_right : p == "Bottom Left" ? position.bottom_left : position.top_right
 
@@ -814,7 +813,7 @@ var table dashTable = na
 
 if showDashboard and barstate.islast
     if na(dashTable)
-        dashTable := table.new(f_dashPosition(dashboardPosition), 2, 11, bgcolor=color.new(color.black, 15), border_width=1, border_color=color.gray, frame_width=1, frame_color=color.gray)
+        dashTable := table.new(f_dashPosition(dashboardPosition), 2, 12, bgcolor=color.new(color.black, 15), border_width=1, border_color=color.gray, frame_width=1, frame_color=color.gray)
 
     // Rolling window measured back from this (the most recent) bar's time -- not a
     // calendar-aligned day/week/month -- so behavior is consistent across timeframes
@@ -823,19 +822,14 @@ if showDashboard and barstate.islast
     cutoffTime = cutoffMs < 0 ? 0 : time - cutoffMs
 
     int totalTrades = 0
-    int wins = 0
-    int losses = 0
+    int slCount = 0
+    int be1Count = 0    // hit TP1, then stopped at breakeven before TP2
+    int be2Count = 0    // hit TP1+TP2, then stopped at breakeven before TP3
+    int tp1Count = 0    // closed AT TP1 (TP1 is the final/last tier)
+    int tp2Count = 0    // closed AT TP2 (TP2 is the final/last tier)
+    int tp3Count = 0    // closed AT TP3 (TP3 is the final/last tier)
+    int stagnantCount = 0
     float totalR = 0.0
-    float grossWinR = 0.0
-    float grossLossR = 0.0
-    float bestR = na
-    float worstR = na
-    int longTrades = 0
-    int longWins = 0
-    int shortTrades = 0
-    int shortWins = 0
-    int impulseTrades = 0
-    int impulseWins = 0
 
     nHist = array.size(tradeHistory)
     if nHist > 0
@@ -844,128 +838,54 @@ if showDashboard and barstate.islast
             if rec.exitTime >= cutoffTime
                 totalTrades += 1
                 totalR += rec.rResult
-                if rec.rResult > 0
-                    wins += 1
-                    grossWinR += rec.rResult
-                else if rec.rResult < 0
-                    losses += 1
-                    grossLossR += rec.rResult
-                bestR := na(bestR) ? rec.rResult : math.max(bestR, rec.rResult)
-                worstR := na(worstR) ? rec.rResult : math.min(worstR, rec.rResult)
-                if rec.dir == 1
-                    longTrades += 1
-                    if rec.rResult > 0
-                        longWins += 1
-                else
-                    shortTrades += 1
-                    if rec.rResult > 0
-                        shortWins += 1
-                if rec.isImpulse
-                    impulseTrades += 1
-                    if rec.rResult > 0
-                        impulseWins += 1
+                if rec.exitReason == "SL"
+                    slCount += 1
+                else if rec.exitReason == "Breakeven"
+                    if rec.tpsReached >= 2
+                        be2Count += 1
+                    else
+                        be1Count += 1
+                else if rec.exitReason == "TP1"
+                    tp1Count += 1
+                else if rec.exitReason == "TP2"
+                    tp2Count += 1
+                else if rec.exitReason == "TP3"
+                    tp3Count += 1
+                else if rec.exitReason == "Stagnant"
+                    stagnantCount += 1
 
-    winRate = totalTrades > 0 ? wins / totalTrades * 100 : 0.0
-    avgR = totalTrades > 0 ? totalR / totalTrades : 0.0
-    profitFactor = grossLossR < 0 ? grossWinR / math.abs(grossLossR) : (grossWinR > 0 ? 999.0 : 0.0)
-    longWinRate = longTrades > 0 ? longWins / longTrades * 100 : 0.0
-    shortWinRate = shortTrades > 0 ? shortWins / shortTrades * 100 : 0.0
-    impulseWinRate = impulseTrades > 0 ? impulseWins / impulseTrades * 100 : 0.0
+    riskAmt = dashBalance * dashRiskPct / 100.0
+    gainCash = totalR * riskAmt
+    gainPct = dashBalance > 0 ? gainCash / dashBalance * 100 : 0.0
 
     headerBg = color.new(color.gray, 30)
     labelColor = color.new(color.white, 0)
     posColor = color.new(color.lime, 0)
     negColor = color.new(color.red, 0)
+    gainColor = totalTrades == 0 ? labelColor : gainCash >= 0 ? posColor : negColor
 
-    table.cell(dashTable, 0, 0, "Performance (" + dashboardPeriod + ")", text_color=labelColor, bgcolor=headerBg, text_size=size.small, text_halign=text.align_left)
+    table.cell(dashTable, 0, 0, "Trade Summary (" + dashboardPeriod + ")", text_color=labelColor, bgcolor=headerBg, text_size=size.small, text_halign=text.align_left)
     table.cell(dashTable, 1, 0, "", bgcolor=headerBg)
     table.cell(dashTable, 0, 1, "Total Trades", text_color=labelColor, text_halign=text.align_left, text_size=size.small)
     table.cell(dashTable, 1, 1, str.tostring(totalTrades), text_color=labelColor, text_halign=text.align_right, text_size=size.small)
-    table.cell(dashTable, 0, 2, "Wins / Losses", text_color=labelColor, text_halign=text.align_left, text_size=size.small)
-    table.cell(dashTable, 1, 2, str.tostring(wins) + " / " + str.tostring(losses), text_color=labelColor, text_halign=text.align_right, text_size=size.small)
-    table.cell(dashTable, 0, 3, "Win Rate", text_color=labelColor, text_halign=text.align_left, text_size=size.small)
-    table.cell(dashTable, 1, 3, str.tostring(winRate, "#.#") + "%", text_color=totalTrades == 0 ? labelColor : winRate >= 50 ? posColor : negColor, text_halign=text.align_right, text_size=size.small)
-    table.cell(dashTable, 0, 4, "Total R", text_color=labelColor, text_halign=text.align_left, text_size=size.small)
-    table.cell(dashTable, 1, 4, str.tostring(totalR, "#.##") + "R", text_color=totalTrades == 0 ? labelColor : totalR >= 0 ? posColor : negColor, text_halign=text.align_right, text_size=size.small)
-    table.cell(dashTable, 0, 5, "Avg R / Trade", text_color=labelColor, text_halign=text.align_left, text_size=size.small)
-    table.cell(dashTable, 1, 5, str.tostring(avgR, "#.##") + "R", text_color=totalTrades == 0 ? labelColor : avgR >= 0 ? posColor : negColor, text_halign=text.align_right, text_size=size.small)
-    table.cell(dashTable, 0, 6, "Profit Factor", text_color=labelColor, text_halign=text.align_left, text_size=size.small)
-    table.cell(dashTable, 1, 6, totalTrades == 0 ? "n/a" : str.tostring(profitFactor, "#.##"), text_color=totalTrades == 0 ? labelColor : profitFactor >= 1 ? posColor : negColor, text_halign=text.align_right, text_size=size.small)
-    table.cell(dashTable, 0, 7, "Best / Worst Trade", text_color=labelColor, text_halign=text.align_left, text_size=size.small)
-    table.cell(dashTable, 1, 7, totalTrades == 0 ? "n/a" : str.tostring(bestR, "#.##") + "R / " + str.tostring(worstR, "#.##") + "R", text_color=labelColor, text_halign=text.align_right, text_size=size.small)
-    table.cell(dashTable, 0, 8, "Long (Win%)", text_color=labelColor, text_halign=text.align_left, text_size=size.small)
-    table.cell(dashTable, 1, 8, str.tostring(longTrades) + " (" + str.tostring(longWinRate, "#.#") + "%)", text_color=labelColor, text_halign=text.align_right, text_size=size.small)
-    table.cell(dashTable, 0, 9, "Short (Win%)", text_color=labelColor, text_halign=text.align_left, text_size=size.small)
-    table.cell(dashTable, 1, 9, str.tostring(shortTrades) + " (" + str.tostring(shortWinRate, "#.#") + "%)", text_color=labelColor, text_halign=text.align_right, text_size=size.small)
-    table.cell(dashTable, 0, 10, "Impulse (Win%)", text_color=labelColor, text_halign=text.align_left, text_size=size.small)
-    table.cell(dashTable, 1, 10, str.tostring(impulseTrades) + " (" + str.tostring(impulseWinRate, "#.#") + "%)", text_color=labelColor, text_halign=text.align_right, text_size=size.small)
+    table.cell(dashTable, 0, 2, "SL", text_color=labelColor, text_halign=text.align_left, text_size=size.small)
+    table.cell(dashTable, 1, 2, str.tostring(slCount), text_color=negColor, text_halign=text.align_right, text_size=size.small)
+    table.cell(dashTable, 0, 3, "Breakeven (after TP1)", text_color=labelColor, text_halign=text.align_left, text_size=size.small)
+    table.cell(dashTable, 1, 3, str.tostring(be1Count), text_color=labelColor, text_halign=text.align_right, text_size=size.small)
+    table.cell(dashTable, 0, 4, "Breakeven (after TP2)", text_color=labelColor, text_halign=text.align_left, text_size=size.small)
+    table.cell(dashTable, 1, 4, str.tostring(be2Count), text_color=labelColor, text_halign=text.align_right, text_size=size.small)
+    table.cell(dashTable, 0, 5, "TP1", text_color=labelColor, text_halign=text.align_left, text_size=size.small)
+    table.cell(dashTable, 1, 5, str.tostring(tp1Count), text_color=posColor, text_halign=text.align_right, text_size=size.small)
+    table.cell(dashTable, 0, 6, "TP2", text_color=labelColor, text_halign=text.align_left, text_size=size.small)
+    table.cell(dashTable, 1, 6, str.tostring(tp2Count), text_color=posColor, text_halign=text.align_right, text_size=size.small)
+    table.cell(dashTable, 0, 7, "TP3", text_color=labelColor, text_halign=text.align_left, text_size=size.small)
+    table.cell(dashTable, 1, 7, str.tostring(tp3Count), text_color=posColor, text_halign=text.align_right, text_size=size.small)
+    table.cell(dashTable, 0, 8, "Stagnant", text_color=labelColor, text_halign=text.align_left, text_size=size.small)
+    table.cell(dashTable, 1, 8, str.tostring(stagnantCount), text_color=labelColor, text_halign=text.align_right, text_size=size.small)
+    table.cell(dashTable, 0, 9, "Total R (Risk/Reward)", text_color=labelColor, text_halign=text.align_left, text_size=size.small)
+    table.cell(dashTable, 1, 9, str.tostring(totalR, "#.##") + "R", text_color=totalTrades == 0 ? labelColor : totalR >= 0 ? posColor : negColor, text_halign=text.align_right, text_size=size.small)
+    table.cell(dashTable, 0, 10, "Gain / Loss ($)", text_color=labelColor, text_halign=text.align_left, text_size=size.small)
+    table.cell(dashTable, 1, 10, str.tostring(gainCash, "#.##"), text_color=gainColor, text_halign=text.align_right, text_size=size.small)
+    table.cell(dashTable, 0, 11, "Gain / Loss (%)", text_color=labelColor, text_halign=text.align_left, text_size=size.small)
+    table.cell(dashTable, 1, 11, str.tostring(gainPct, "#.##") + "%", text_color=gainColor, text_halign=text.align_right, text_size=size.small)
 
-// ───────────────────────────── Scenario / Expectancy Table ─────────────────────────────
-// Buckets every closed trade (same rolling window as the dashboard above) by how many
-// TP tiers it reached before closing, then shows the REAL observed share of trades and
-// average R/cash for each bucket -- this bot's actual expectancy, not a manual guess.
-// A bucket with zero historical samples yet falls back to the theoretical R for this
-// bot's own stop-handling rule (original SL until TP1, breakeven forever after -- it
-// never partially scales out, so that's the whole rule), marked with "~", so the table
-// isn't empty while real data is still accumulating.
-f_bucketLabel(k, nTP) =>
-    k == 0 ? "Stopped before TP1" : k == nTP ? "Full run to TP" + str.tostring(nTP) : "TP" + str.tostring(k) + " hit, then stopped"
-
-f_bucketNominalR(k, nTP) =>
-    k == nTP ? (nTP == 1 ? tp1R : nTP == 2 ? tp2R : tp3R) : (k == 0 ? -1.0 : 0.0)
-
-var table scenarioTable = na
-
-if showScenarioTable and barstate.islast
-    if na(scenarioTable)
-        scenarioTable := table.new(f_dashPosition(scenarioPosition), 4, numTPs + 3, bgcolor=color.new(color.black, 15), border_width=1, border_color=color.gray, frame_width=1, frame_color=color.gray)
-    table.clear(scenarioTable, 0, 0, 3, numTPs + 2)
-
-    cutoffMs2 = dashboardPeriod == "Today" ? 86400000 : dashboardPeriod == "This Week" ? 604800000 : dashboardPeriod == "This Month" ? 2592000000 : -1
-    cutoffTime2 = cutoffMs2 < 0 ? 0 : time - cutoffMs2
-
-    array<int> bucketCount = array.new<int>(numTPs + 1, 0)
-    array<float> bucketSumR = array.new<float>(numTPs + 1, 0.0)
-    scenTotal = 0
-
-    nHist2 = array.size(tradeHistory)
-    if nHist2 > 0
-        for i = 0 to nHist2 - 1
-            rec = array.get(tradeHistory, i)
-            if rec.exitTime >= cutoffTime2
-                k = math.min(rec.tpsReached, numTPs)
-                array.set(bucketCount, k, array.get(bucketCount, k) + 1)
-                array.set(bucketSumR, k, array.get(bucketSumR, k) + rec.rResult)
-                scenTotal += 1
-
-    riskAmt2 = scenarioBalance * scenarioRiskPct / 100.0
-    headerBg2 = color.new(color.gray, 30)
-    labelColor2 = color.new(color.white, 0)
-    posColor2 = color.new(color.lime, 0)
-    negColor2 = color.new(color.red, 0)
-
-    table.cell(scenarioTable, 0, 0, "Scenario (" + dashboardPeriod + ")", text_color=labelColor2, bgcolor=headerBg2, text_size=size.small, text_halign=text.align_left)
-    table.cell(scenarioTable, 1, 0, "Trades", text_color=labelColor2, bgcolor=headerBg2, text_size=size.small, text_halign=text.align_right)
-    table.cell(scenarioTable, 2, 0, "Avg R", text_color=labelColor2, bgcolor=headerBg2, text_size=size.small, text_halign=text.align_right)
-    table.cell(scenarioTable, 3, 0, "Avg Cash", text_color=labelColor2, bgcolor=headerBg2, text_size=size.small, text_halign=text.align_right)
-
-    if scenTotal == 0
-        table.cell(scenarioTable, 0, 1, "No closed trades yet in this period", text_color=labelColor2, text_size=size.small, text_halign=text.align_left)
-    else
-        expR = 0.0
-        for k = 0 to numTPs
-            cnt = array.get(bucketCount, k)
-            sumR = array.get(bucketSumR, k)
-            avgRk = cnt > 0 ? sumR / cnt : f_bucketNominalR(k, numTPs)
-            probk = cnt / scenTotal * 100
-            expR += (cnt / scenTotal) * avgRk
-            rowColor = avgRk >= 0 ? posColor2 : negColor2
-            table.cell(scenarioTable, 0, k + 1, f_bucketLabel(k, numTPs), text_color=labelColor2, text_size=size.small, text_halign=text.align_left)
-            table.cell(scenarioTable, 1, k + 1, str.tostring(cnt) + " (" + str.tostring(probk, "#.#") + "%)", text_color=labelColor2, text_size=size.small, text_halign=text.align_right)
-            table.cell(scenarioTable, 2, k + 1, (cnt > 0 ? "" : "~") + str.tostring(avgRk, "#.##") + "R", text_color=rowColor, text_size=size.small, text_halign=text.align_right)
-            table.cell(scenarioTable, 3, k + 1, (cnt > 0 ? "" : "~") + str.tostring(avgRk * riskAmt2, "#.##"), text_color=rowColor, text_size=size.small, text_halign=text.align_right)
-
-        table.cell(scenarioTable, 0, numTPs + 2, "Expectancy / trade", text_color=labelColor2, bgcolor=headerBg2, text_size=size.small, text_halign=text.align_left)
-        table.cell(scenarioTable, 1, numTPs + 2, "~ = no trades yet", text_color=labelColor2, bgcolor=headerBg2, text_size=size.tiny, text_halign=text.align_right)
-        table.cell(scenarioTable, 2, numTPs + 2, str.tostring(expR, "#.##") + "R", text_color=expR >= 0 ? posColor2 : negColor2, bgcolor=headerBg2, text_size=size.small, text_halign=text.align_right)
-        table.cell(scenarioTable, 3, numTPs + 2, str.tostring(expR * riskAmt2, "#.##"), text_color=expR >= 0 ? posColor2 : negColor2, bgcolor=headerBg2, text_size=size.small, text_halign=text.align_right)
