@@ -246,7 +246,7 @@ type Setup
     float  preBreakoutLevel  // high/low of the candle immediately before the breakout candle -- one of two impulse-entry SL candidates (see STATE 5)
     float  zoneHigh      // top of the retracement target zone (FVG or range fallback)
     float  zoneLow       // bottom of the retracement target zone
-    float  zoneMid       // midpoint of the zone -- this is the actual level price must touch
+    float  zoneMid       // midpoint of the zone -- computed but no longer used for confirmation (that now uses zoneHigh/zoneLow directly, see STATE 2)
     bool   touchedZone   // true once price has traded into the zone at least once
     float  slPrice       // stop-loss price for the trade
     float  entryPrice    // entry price for the trade
@@ -667,11 +667,13 @@ if numSetups > 0
             if touched
                 s.touchedZone := true
 
-            // A confirmation candle closes back beyond the zone's midpoint, in the
-            // SAME direction as the original breakout (i.e. the pullback is over).
-            // (Unchanged -- only the touch trigger above moved to the zone's start.)
-            confirmBull = close > open and close > s.zoneMid
-            confirmBear = close < open and close < s.zoneMid
+            // A confirmation candle closes back beyond the SAME boundary the touch
+            // above used (zoneStart -- the FVG's own edge, or the range's own boundary
+            // when falling back to the range), in the SAME direction as the original
+            // breakout (i.e. the pullback is over). No midpoint requirement -- touch and
+            // confirmation both react to the zone's near edge.
+            confirmBull = close > open and close > zoneStart
+            confirmBear = close < open and close < zoneStart
             confirmation = s.touchedZone and (s.dir == 1 ? confirmBull : confirmBear)
 
             // Invalidated = price fully reversed back through the FAR side of the range
