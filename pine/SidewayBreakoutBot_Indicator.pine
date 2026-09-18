@@ -533,25 +533,6 @@ if numSetups > 0
                     else
                         isShortEntry := true
 
-                    // Small "i" marker at the exact entry point, carrying a tooltip
-                    // (hover to expand) explaining why the entry fired: the range and
-                    // zone it used, whether that zone was a real FVG or the range's own
-                    // fallback, every level computed, and the flip count if this setup
-                    // is a re-watch after a prior SL on the same range.
-                    usedFallback = s.zoneHigh == s.lockedHigh and s.zoneLow == s.lockedLow
-                    zoneDesc = usedFallback ? "range fallback (no qualifying FVG)" : "Fair Value Gap"
-                    entryInfo = (s.dir == 1 ? "LONG" : "SHORT") + " entry\n" +
-                         "Range: " + str.tostring(s.lockedLow, format.mintick) + " - " + str.tostring(s.lockedHigh, format.mintick) + "\n" +
-                         "Zone (" + zoneDesc + "): " + str.tostring(s.zoneLow, format.mintick) + " - " + str.tostring(s.zoneHigh, format.mintick) + "\n" +
-                         "Entry: " + str.tostring(s.entryPrice, format.mintick) + "   SL: " + str.tostring(s.slPrice, format.mintick) + "\n" +
-                         "TP1: " + str.tostring(s.tp1Price, format.mintick) +
-                         (numTPs >= 2 ? "   TP2: " + str.tostring(s.tp2Price, format.mintick) : "") +
-                         (numTPs >= 3 ? "   TP3: " + str.tostring(s.tp3Price, format.mintick) : "") + "\n" +
-                         "Risk (1R): " + str.tostring(r, format.mintick) + "\n" +
-                         "Breakout bar: " + str.tostring(s.breakoutBar) + "   Entry bar: " + str.tostring(bar_index) +
-                         (s.flipsUsed > 0 ? "\nFlip #" + str.tostring(s.flipsUsed) + " on this range after a prior SL" : "")
-                    s.entryInfoLbl := label.new(bar_index, s.entryPrice, "i", style=label.style_circle, color=color.new(color.gray, 20), textcolor=color.white, size=size.tiny, tooltip=entryInfo)
-
                     if showTradeZone
                         // Reward zone extends only as far as whichever TP is actually the
                         // last one enabled (numTPs), not always all the way to TP3.
@@ -595,6 +576,26 @@ if numSetups > 0
                             s.tp2Tag := label.new(initialRight, s.tp2Price, "TP2 (" + str.tostring(s.tp2Price, format.mintick) + ")", style=label.style_label_left, color=upCss, textcolor=color.white, size=size.small)
                         if numTPs >= 3
                             s.tp3Tag := label.new(initialRight, s.tp3Price, "TP3 (" + str.tostring(s.tp3Price, format.mintick) + ")", style=label.style_label_left, color=upCss, textcolor=color.white, size=size.small)
+
+                    // Small "i" marker at the exact entry point, carrying a tooltip
+                    // (hover to expand) explaining why the entry fired: the range and
+                    // zone it used, whether that zone was a real FVG or the range's own
+                    // fallback, every level computed, and the flip count if this setup
+                    // is a re-watch after a prior SL on the same range. Created LAST so
+                    // it renders on top of the fade bands/lines/tags above.
+                    usedFallback = s.zoneHigh == s.lockedHigh and s.zoneLow == s.lockedLow
+                    zoneDesc = usedFallback ? "range fallback (no qualifying FVG)" : "Fair Value Gap"
+                    entryInfo = (s.dir == 1 ? "LONG" : "SHORT") + " entry\n" +
+                         "Range: " + str.tostring(s.lockedLow, format.mintick) + " - " + str.tostring(s.lockedHigh, format.mintick) + "\n" +
+                         "Zone (" + zoneDesc + "): " + str.tostring(s.zoneLow, format.mintick) + " - " + str.tostring(s.zoneHigh, format.mintick) + "\n" +
+                         "Entry: " + str.tostring(s.entryPrice, format.mintick) + "   SL: " + str.tostring(s.slPrice, format.mintick) + "\n" +
+                         "TP1: " + str.tostring(s.tp1Price, format.mintick) +
+                         (numTPs >= 2 ? "   TP2: " + str.tostring(s.tp2Price, format.mintick) : "") +
+                         (numTPs >= 3 ? "   TP3: " + str.tostring(s.tp3Price, format.mintick) : "") + "\n" +
+                         "Risk (1R): " + str.tostring(r, format.mintick) + "\n" +
+                         "Breakout bar: " + str.tostring(s.breakoutBar) + "   Entry bar: " + str.tostring(bar_index) +
+                         (s.flipsUsed > 0 ? "\nFlip #" + str.tostring(s.flipsUsed) + " on this range after a prior SL" : "")
+                    s.entryInfoLbl := label.new(bar_index, s.entryPrice, "i", style=label.style_circle, color=color.new(color.gray, 20), textcolor=color.white, size=size.tiny, tooltip=entryInfo)
                     alert("Sideway Breakout Bot: " + (s.dir == 1 ? "LONG" : "SHORT") + " entry signal", alert.freq_once_per_bar_close)
 
             else if invalidated or minutesSinceBreakout > retraceTimeoutMin
