@@ -128,7 +128,8 @@ struct SSetup
    double   lockedLow;
    datetime lockTime;
    int      dir;               // 0 undetermined, 1 long, -1 short
-   datetime breakoutTime;
+   datetime breakoutTime;      // time of the CONFIRMED breakout -- reassigned in STATE 4 (drives the retracement timeout, matching Pine's s.breakoutTime)
+   datetime breakoutBarTime;   // time of the ORIGINAL breakout candle -- set once in STATE 1, never touched again (matches Pine's s.breakoutBar; anchors the touchedZone backfill scan in STATE 4, which must NOT use the just-reassigned breakoutTime above)
    bool     isImpulse;
    double   impulsePct;
    double   preBreakoutLevel;
@@ -527,6 +528,7 @@ void ProcessNewBar()
          {
             s.dir = bullBreak ? 1 : -1;
             s.breakoutTime = iTime(_Symbol, _Period, base);
+            s.breakoutBarTime = s.breakoutTime; // ORIGINAL breakout candle, never reassigned again
 
             double rangeHeight = s.lockedHigh - s.lockedLow;
             double breakoutDist = bullBreak ? (c - s.lockedHigh) : (s.lockedLow - c);
@@ -574,7 +576,12 @@ void ProcessNewBar()
             FindFVGZone(s.dir, s.lockTime, s.lockedHigh, s.lockedLow, base, zH, zL);
             s.zoneHigh = zH; s.zoneLow = zL;
             double zoneStart2 = (s.dir == 1) ? s.zoneHigh : s.zoneLow;
-            int scanLen2 = (int)MathMax(MathMin(BarsSince(s.breakoutTime) + 1, InpZoneScanMaxBars), 1);
+            // Anchored on breakoutBarTime (the ORIGINAL breakout candle), NOT the
+            // breakoutTime just reassigned above (the confirmation candle) --
+            // otherwise this window is far too short and backfills touchedZone
+            // from almost nothing, exactly the bug the Pine version already hit
+            // and fixed once before.
+            int scanLen2 = (int)MathMax(MathMin(BarsSince(s.breakoutBarTime) + 1, InpZoneScanMaxBars), 1);
             bool touchedSeed = false;
             for(int i = 0; i < scanLen2; i++)
             {
@@ -596,7 +603,7 @@ void ProcessNewBar()
          // Entry timing/level handled by open-of-new-bar logic below; here we
          // only re-check the bar-count-independent timeout (wick-based
          // invalidation is handled every tick in ProcessPerTick()).
-         double minutesSinceBreakout = (double)(TimeCurrent() - s.breakoutTime) / 60.0;
+         double minutesSinceBreakout = (double)(iTime(_Symbol, _Period, 0) - s.breakoutTime) / 60.0;
          if(minutesSinceBreakout > InpRetraceTimeoutMin)
             removeThis = true;
       }
@@ -728,14 +735,28 @@ void ExecuteEntry(SSetup &s, double entryPrice, double slPrice, double r, bool i
    ulong posId = (ulong)HistoryDealGetInteger(dealTicket, DEAL_POSITION_ID);
    double fillPrice = HistoryDealGetDouble(dealTicket, DEAL_PRICE);
 
+   // Re-base the risk distance and TP1/TP2/TP3 on the ACTUAL fill price.
+   // slPrice is anchored to a fixed external level (range boundary or
+   // pre-breakout wick), so it needs no adjustment for slippage -- but the
+   // R multiples must be measured from where the trade actually entered,
+   // not the pre-trade theoretical price, or a live fill that slips ends up
+   // with TP targets Pine's frictionless simulation never has to correct for.
+   double realR = MathAbs(fillPrice - slPrice);
+   double tp1r = (s.dir == 1) ? fillPrice + realR * InpTp1R : fillPrice - realR * InpTp1R;
+   double tp2r = (s.dir == 1) ? fillPrice + realR * InpTp2R : fillPrice - realR * InpTp2R;
+   double tp3r = (s.dir == 1) ? fillPrice + realR * InpTp3R : fillPrice - realR * InpTp3R;
+   double finalTpReal = (g_numTPs == 1) ? tp1r : (g_numTPs == 2) ? tp2r : tp3r;
+   if(realR > 0 && MathAbs(NormalizePrice(finalTpReal) - NormalizePrice(finalTp)) > _Point / 2.0)
+      trade.PositionModify(posId, NormalizePrice(backstopSl), NormalizePrice(finalTpReal));
+
    RecordTradedZone(s.dir, s.lockedHigh, s.lockedLow);
 
    s.posTicket   = posId;
    s.entryPrice  = fillPrice;
    s.slPrice     = slPrice;
-   s.tp1Price    = tp1;
-   s.tp2Price    = tp2;
-   s.tp3Price    = tp3;
+   s.tp1Price    = tp1r;
+   s.tp2Price    = tp2r;
+   s.tp3Price    = tp3r;
    s.tp1Filled   = false;
    s.tp2Filled   = false;
    s.qtyAtEntry  = lots;
@@ -776,6 +797,14 @@ void ProcessPerTick()
          {
             DeleteZoneBox(s);
             removeThis = true;
+         }
+         else if(InpShowZoneBox)
+         {
+            // Keep stretching the right edge while still waiting, matching
+            // Pine's box.set_right(s.zoneBox, bar_index) in STATE 2.
+            string zoneName = s.tag + "_zone";
+            if(ObjectFind(0, zoneName) >= 0)
+               ObjectMove(0, zoneName, 1, iTime(_Symbol, _Period, 0), s.zoneLow);
          }
       }
       else if(s.state == 5)
@@ -951,7 +980,7 @@ void FinalizeTrade(SSetup &s, string exitReason, int tpsReached)
       flip.state = 1;
       flip.lockedHigh = s.lockedHigh;
       flip.lockedLow  = s.lockedLow;
-      flip.lockTime   = TimeCurrent();
+      flip.lockTime   = iTime(_Symbol, _Period, 0);
       flip.dir = 0;
       flip.flipsUsed = s.flipsUsed + 1;
       g_setupCounter++;
@@ -1037,14 +1066,23 @@ void DrawZoneBox(SSetup &s)
 {
    if(!InpShowZoneBox) return;
    string name = s.tag + "_zone";
-   datetime t1 = TimeCurrent();
+   // Anchored on breakoutTime (the confirmation/breakout candle -- correct in
+   // both call sites, since it was just set to that bar's time right before
+   // this runs), stretched immediately to the current bar so it starts
+   // visibly wide rather than zero-width; ProcessPerTick()'s STATE 2 branch
+   // then keeps extending the right edge every tick while this setup waits,
+   // matching the Pine indicator's box.set_right(s.zoneBox, bar_index).
+   datetime t1 = s.breakoutTime;
+   datetime t2 = iTime(_Symbol, _Period, 0);
    if(ObjectFind(0, name) < 0)
    {
-      ObjectCreate(0, name, OBJ_RECTANGLE, 0, t1, s.zoneHigh, t1, s.zoneLow);
+      ObjectCreate(0, name, OBJ_RECTANGLE, 0, t1, s.zoneHigh, t2, s.zoneLow);
       ObjectSetInteger(0, name, OBJPROP_COLOR, clrOrange);
       ObjectSetInteger(0, name, OBJPROP_BACK, true);
       ObjectSetInteger(0, name, OBJPROP_FILL, true);
    }
+   ObjectMove(0, name, 0, t1, s.zoneHigh);
+   ObjectMove(0, name, 1, t2, s.zoneLow);
 }
 
 void DeleteZoneBox(SSetup &s)
