@@ -34,6 +34,12 @@
 //|     checks (zone touch, invalidation, TP/SL fills) are evaluated  |
 //|     every tick, matching how real stop/limit orders actually      |
 //|     fill and how the Pine version deliberately reacts live.       |
+//|  5) NO NATIVE ALPHA TRANSPARENCY. The risk/reward boxes (red for   |
+//|     SL, green for TP -- TradingView Long/Short Position style)    |
+//|     simulate "opacity" by blending the box color with the         |
+//|     chart's actual background color, since MQL5 chart objects     |
+//|     have no true alpha channel. This adapts automatically to      |
+//|     light/dark themes but is an approximation, not a real blend.  |
 //+------------------------------------------------------------------+
 #property copyright "Sideway Breakout Bot"
 #property version   "1.00"
@@ -97,6 +103,9 @@ input group "Visuals"
 input bool   InpShowRangeBox        = true;   // Show Range Box
 input bool   InpShowZoneBox         = true;   // Show Retracement Zone Box
 input bool   InpShowTradeLines      = true;   // Show Entry/SL/TP Lines
+input bool   InpShowRRBoxes         = true;   // Show Risk/Reward Boxes (TradingView-style RR tool)
+input double InpBoxTransparencyPct  = 80.0;   // RR Box Transparency % (0=solid, 100=invisible; simulated via background blend -- see header note 5)
+input int    InpMinWidthBars        = 30;     // Minimum RR Box/Line Width (bars) -- how wide a brand-new entry starts before it grows
 
 input group "Dashboard"
 input bool   InpShowDashboard        = true;      // Show Trade Summary Dashboard (chart comment)
@@ -735,7 +744,7 @@ void ExecuteEntry(SSetup &s, double entryPrice, double slPrice, double r, bool i
    s.cashPnLSoFar   = 0.0;
    s.rWeightedSoFar = 0.0;
 
-   DrawTradeLines(s);
+   DrawTradeVisuals(s);
 }
 
 //====================================================================
@@ -782,7 +791,7 @@ void ProcessPerTick()
       if(removeThis) RemoveSetupAt(idx);
    }
 
-   if(InpShowTradeLines) StretchOpenTradeLines();
+   if(InpShowTradeLines || InpShowRRBoxes) StretchOpenTradeVisuals();
    if(InpShowDashboard)  UpdateDashboard();
 }
 
@@ -1034,14 +1043,43 @@ void DeleteZoneBox(SSetup &s)
    ObjectDelete(0, s.tag + "_zone");
 }
 
-void DrawTradeLines(SSetup &s)
+// Simulates Pine's color.new(clr, transp): MQL5 objects have no real alpha
+// channel, so we blend the target color toward the chart's own background
+// color instead -- adapts to light/dark themes, and gives the same "faded"
+// look a semi-transparent fill would. transparencyPct: 0 = solid color,
+// 100 = fully background (invisible).
+color BlendWithBackground(color clr, double transparencyPct)
 {
-   if(!InpShowTradeLines) return;
-   datetime t1 = s.entryTime;
-   datetime t2 = t1 + PeriodSeconds() * 30;
+   double opacity = 1.0 - MathMax(0.0, MathMin(100.0, transparencyPct)) / 100.0;
+   int bg = (int)ChartGetInteger(0, CHART_COLOR_BACKGROUND);
+   int fg = (int)clr;
+   // MQL5 'color' is stored 0x00BBGGRR (Win32 COLORREF order).
+   int r = (int)MathRound(((fg & 0xFF) * opacity) + ((bg & 0xFF) * (1.0 - opacity)));
+   int g = (int)MathRound((((fg >> 8) & 0xFF) * opacity) + (((bg >> 8) & 0xFF) * (1.0 - opacity)));
+   int b = (int)MathRound((((fg >> 16) & 0xFF) * opacity) + (((bg >> 16) & 0xFF) * (1.0 - opacity)));
+   r = (int)MathMax(0, MathMin(255, r));
+   g = (int)MathMax(0, MathMin(255, g));
+   b = (int)MathMax(0, MathMin(255, b));
+   return((color)(r | (g << 8) | (b << 16)));
+}
 
+void DrawTradeVisuals(SSetup &s)
+{
    ObjectDelete(0, s.tag + "_zone");
 
+   double lastTpPrice = (g_numTPs == 1) ? s.tp1Price : (g_numTPs == 2) ? s.tp2Price : s.tp3Price;
+   datetime t1 = s.entryTime;
+   datetime t2 = t1 + PeriodSeconds() * InpMinWidthBars;
+
+   if(InpShowRRBoxes)
+   {
+      color riskClr   = BlendWithBackground(clrRed,       InpBoxTransparencyPct);
+      color rewardClr = BlendWithBackground(clrLimeGreen, InpBoxTransparencyPct);
+      CreateBox(s.tag + "_riskbox",   t1, s.entryPrice, t2, s.slPrice,  riskClr);
+      CreateBox(s.tag + "_rewardbox", t1, s.entryPrice, t2, lastTpPrice, rewardClr);
+   }
+
+   if(!InpShowTradeLines) return;
    CreateLine(s.tag + "_entry", t1, s.entryPrice, t2, s.entryPrice, clrWhite);
    CreateLine(s.tag + "_sl",    t1, s.slPrice,    t2, s.slPrice,    clrRed);
    CreateLine(s.tag + "_tp1",   t1, s.tp1Price,   t2, s.tp1Price,   clrLimeGreen);
@@ -1057,14 +1095,27 @@ void CreateLine(string name, datetime t1, double p1, datetime t2, double p2, col
    ObjectSetInteger(0, name, OBJPROP_RAY_RIGHT, false);
 }
 
-void StretchOpenTradeLines()
+void CreateBox(string name, datetime t1, double p1, datetime t2, double p2, color clr)
+{
+   if(ObjectFind(0, name) < 0)
+      ObjectCreate(0, name, OBJ_RECTANGLE, 0, t1, p1, t2, p2);
+   ObjectSetInteger(0, name, OBJPROP_COLOR, clr);
+   ObjectSetInteger(0, name, OBJPROP_BGCOLOR, clr);
+   ObjectSetInteger(0, name, OBJPROP_FILL, true);
+   ObjectSetInteger(0, name, OBJPROP_BACK, true);
+   ObjectSetInteger(0, name, OBJPROP_RAY_RIGHT, false);
+}
+
+void StretchOpenTradeVisuals()
 {
    datetime now = TimeCurrent();
    int n = ArraySize(g_setups);
    for(int i = 0; i < n; i++)
    {
       if(g_setups[i].state != 3) continue;
-      string base = g_setups[i].tag;
+      SSetup s = g_setups[i];
+      string base = s.tag;
+
       string names[5] = {"_entry", "_sl", "_tp1", "_tp2", "_tp3"};
       for(int k = 0; k < 5; k++)
       {
@@ -1072,6 +1123,19 @@ void StretchOpenTradeLines()
          if(ObjectFind(0, nm) >= 0)
             ObjectMove(0, nm, 1, now, ObjectGetDouble(0, nm, OBJPROP_PRICE, 1));
       }
+
+      // Risk box's SL edge follows the current (possibly breakeven-adjusted)
+      // stop, exactly like the SL line above and the Pine version's slLine.
+      double stopNow = (g_numTPs >= 2 && s.tp1Filled && InpMoveToBEAfterTP1) ? s.entryPrice : s.slPrice;
+      string riskBox = base + "_riskbox";
+      if(ObjectFind(0, riskBox) >= 0)
+      {
+         ObjectMove(0, riskBox, 0, s.entryTime, s.entryPrice);
+         ObjectMove(0, riskBox, 1, now, stopNow);
+      }
+      string rewardBox = base + "_rewardbox";
+      if(ObjectFind(0, rewardBox) >= 0)
+         ObjectMove(0, rewardBox, 1, now, ObjectGetDouble(0, rewardBox, OBJPROP_PRICE, 1));
    }
 }
 
