@@ -266,6 +266,7 @@ type Setup
     label  tp1Lbl
     label  tp2Lbl
     label  tp3Lbl
+    label  entryInfoLbl  // small dot at the entry point carrying a tooltip that explains why the entry fired (range/zone/levels used)
     bool   stopWasHit    // sticky flag: true once price has ever crossed the current stop level
     bool   stagnantClosed // sticky flag: true once strategy.close() was called for stagnation (so the posSize==0 branch, detected a bar later, doesn't misattribute the close to a TP)
     int    flipsUsed     // how many times this range's lineage has already flipped direction after an SL
@@ -335,7 +336,7 @@ if numSetups > 0
                              zoneBox=na, riskBands=array.new<box>(), rewardBands=array.new<box>(),
                              entryLine=na, slLine=na, tp1Line=na, tp2Line=na, tp3Line=na,
                              entryTag=na, slTag=na, tp1Tag=na, tp2Tag=na, tp3Tag=na,
-                             slLbl=na, tp1Lbl=na, tp2Lbl=na, tp3Lbl=na,
+                             slLbl=na, tp1Lbl=na, tp2Lbl=na, tp3Lbl=na, entryInfoLbl=na,
                              stopWasHit=false, stagnantClosed=false, flipsUsed=s.flipsUsed + 1, entryBar=na, leftEntry=false))
                         alert("Sideway Breakout Bot: watching the same range for an opposite breakout", alert.freq_once_per_bar_close)
                 else if s.stagnantClosed
@@ -603,6 +604,25 @@ if numSetups > 0
                         isShortEntry := true
                     s.state := 3
                     s.entryBar := bar_index
+
+                    // Small "i" marker at the exact entry point, carrying a tooltip
+                    // (hover to expand) explaining why the entry fired: the range and
+                    // zone it used, whether that zone was a real FVG or the range's own
+                    // fallback, every level computed, position sizing, and the flip
+                    // count if this setup is a re-watch after a prior SL on the same range.
+                    usedFallback = s.zoneHigh == s.lockedHigh and s.zoneLow == s.lockedLow
+                    zoneDesc = usedFallback ? "range fallback (no qualifying FVG)" : "Fair Value Gap"
+                    entryInfo = (s.dir == 1 ? "LONG" : "SHORT") + " entry\n" +
+                         "Range: " + str.tostring(s.lockedLow, format.mintick) + " - " + str.tostring(s.lockedHigh, format.mintick) + "\n" +
+                         "Zone (" + zoneDesc + "): " + str.tostring(s.zoneLow, format.mintick) + " - " + str.tostring(s.zoneHigh, format.mintick) + "\n" +
+                         "Entry: " + str.tostring(s.entryPrice, format.mintick) + "   SL: " + str.tostring(s.slPrice, format.mintick) + "\n" +
+                         "TP1: " + str.tostring(s.tp1Price, format.mintick) +
+                         (numTPs >= 2 ? "   TP2: " + str.tostring(s.tp2Price, format.mintick) : "") +
+                         (numTPs >= 3 ? "   TP3: " + str.tostring(s.tp3Price, format.mintick) : "") + "\n" +
+                         "Risk (1R): " + str.tostring(r, format.mintick) + "   Qty: " + str.tostring(qtyToTrade, "#.####") + "   Risk %: " + str.tostring(riskPercent) + "\n" +
+                         "Breakout bar: " + str.tostring(s.breakoutBar) + "   Entry bar: " + str.tostring(bar_index) +
+                         (s.flipsUsed > 0 ? "\nFlip #" + str.tostring(s.flipsUsed) + " on this range after a prior SL" : "")
+                    s.entryInfoLbl := label.new(bar_index, s.entryPrice, "i", style=label.style_circle, color=color.new(color.gray, 20), textcolor=color.white, size=size.tiny, tooltip=entryInfo)
                     if showLevels
                         // Reward zone extends only as far as whichever TP is actually the
                         // last one enabled (numTPs), not always all the way to TP3.
@@ -686,7 +706,7 @@ if freshRange and canArmNewSetup
          zoneBox=na, riskBands=array.new<box>(), rewardBands=array.new<box>(),
          entryLine=na, slLine=na, tp1Line=na, tp2Line=na, tp3Line=na,
          entryTag=na, slTag=na, tp1Tag=na, tp2Tag=na, tp3Tag=na,
-         slLbl=na, tp1Lbl=na, tp2Lbl=na, tp3Lbl=na,
+         slLbl=na, tp1Lbl=na, tp2Lbl=na, tp3Lbl=na, entryInfoLbl=na,
          stopWasHit=false, stagnantClosed=false, flipsUsed=0, entryBar=na, leftEntry=false))
 
 // ───────────────────────────── Alerts ─────────────────────────────
