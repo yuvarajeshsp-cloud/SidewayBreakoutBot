@@ -197,6 +197,25 @@ f_findZone(d, lockBarArg, lockedHighArg, lockedLowArg) =>
 
     [fH, fL]
 
+// Persistent (never cleared) record of every (range, direction) pair that has already
+// produced an entry, so a range that gets retested and re-consolidates later can't fire
+// a second same-direction entry -- an SL-flip is still allowed, since it watches for the
+// OPPOSITE direction and so never matches an entry already recorded here.
+var array<float> tradedHigh = array.new<float>()
+var array<float> tradedLow  = array.new<float>()
+var array<int>   tradedDir  = array.new<int>()
+
+// True if a same-direction entry already happened on a range that overlaps this one at
+// all (any shared price counts as "the same zone").
+f_zoneAlreadyTraded(d, hi, lo) =>
+    found = false
+    n2 = array.size(tradedDir)
+    if n2 > 0
+        for i = 0 to n2 - 1
+            if not found and array.get(tradedDir, i) == d and hi >= array.get(tradedLow, i) and lo <= array.get(tradedHigh, i)
+                found := true
+    found
+
 // ───────────────────────────── Setup tracking ─────────────────────────────
 // Each Setup is one independent breakout/retracement/trade lifecycle, tracked in an
 // array so several can run side by side -- watching or trading one range no longer
@@ -553,8 +572,16 @@ if numSetups > 0
                 // configured max -- the range's width won't change, so there's no point
                 // waiting for a re-confirmation on this same setup.
                 slTooWide = maxSlPips > 0 and r > maxSlPips * pipSize
+                // Also skip if this exact (range, direction) already produced an entry
+                // before -- a retest-and-continue shouldn't stack a second same-direction
+                // position on the same zone. An SL-flip is unaffected: it watches for the
+                // OPPOSITE direction, which never matches an entry already recorded here.
+                zoneAlreadyTraded = f_zoneAlreadyTraded(s.dir, s.lockedHigh, s.lockedLow)
 
-                if qtyToTrade > 0 and not slTooWide
+                if qtyToTrade > 0 and not slTooWide and not zoneAlreadyTraded
+                    array.push(tradedHigh, s.lockedHigh)
+                    array.push(tradedLow, s.lockedLow)
+                    array.push(tradedDir, s.dir)
                     // Unique id per setup (e.g. "Long_7") so multiple concurrent
                     // positions -- even in the same direction -- never collide.
                     setupCounter += 1
@@ -616,7 +643,8 @@ if numSetups > 0
                     alert("Sideway Breakout Bot: " + (s.dir == 1 ? "LONG" : "SHORT") + " entry triggered", alert.freq_once_per_bar_close)
                 else
                     // Either a degenerate case (e.g. zero risk distance) that can't be
-                    // sized, or the SL is wider than the configured max -- drop it.
+                    // sized, the SL is wider than the configured max, or this (range,
+                    // direction) was already traded -- drop it.
                     if not na(s.zoneBox)
                         box.delete(s.zoneBox)
                     removeThis := true
