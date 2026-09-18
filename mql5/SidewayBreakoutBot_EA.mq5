@@ -108,6 +108,7 @@ input double InpBoxTransparencyPct  = 80.0;   // RR Box Transparency % (0=solid,
 input int    InpMinWidthBars        = 30;     // Minimum RR Box/Line Width (bars) -- how wide a brand-new entry starts before it grows
 input bool   InpShowPriceTags       = true;   // Show Entry/SL/TP Price Tags (slide with the trade, like the Pine indicator)
 input bool   InpShowHitMarkers      = true;   // Show TP1/TP2/TP3/SL Hit Dots (fixed at the exact candle each level was hit)
+input bool   InpShowInfoMarker      = true;   // Show "i" Info Marker at Entry (hover for why the entry fired -- like the Pine indicator)
 
 input group "Dashboard"
 input bool   InpShowDashboard        = true;      // Show Trade Summary Dashboard (chart comment)
@@ -768,6 +769,7 @@ void ExecuteEntry(SSetup &s, double entryPrice, double slPrice, double r, bool i
    s.rWeightedSoFar = 0.0;
 
    DrawTradeVisuals(s);
+   CreateInfoMarker(s, realR);
 }
 
 //====================================================================
@@ -1179,6 +1181,52 @@ void CreateHitMarker(string name, datetime t, double price, string txt, color cl
    ObjectSetInteger(0, name, OBJPROP_COLOR, clr);
    ObjectSetInteger(0, name, OBJPROP_FONTSIZE, 8);
    ObjectSetInteger(0, name, OBJPROP_ANCHOR, ANCHOR_LEFT);
+}
+
+// A small "i" marker at the exact entry point, carrying a native MQL5
+// tooltip (hover to expand) explaining why the entry fired -- the range and
+// zone it used (or the impulse mode instead), every level computed, and the
+// flip count if this is a re-watch after a prior SL on the same range.
+// Matches the Pine indicator's entryInfoLbl. Created LAST (after
+// DrawTradeVisuals) so it renders on top of the lines/boxes/tags, same
+// z-order reasoning as the Pine version's fix for this exact marker.
+void CreateInfoMarker(SSetup &s, double r)
+{
+   if(!InpShowInfoMarker) return;
+
+   string info = (s.dir == 1 ? "LONG" : "SHORT") + " entry\n";
+   info += "Range: " + DoubleToString(s.lockedLow, _Digits) + " - " + DoubleToString(s.lockedHigh, _Digits) + "\n";
+
+   if(s.isImpulse)
+   {
+      info += "Entry mode: Impulse breakout (body " + DoubleToString(s.impulsePct, 1) + "% beyond range, no retracement wait)\n";
+      info += "SL source: pre-breakout candle " + (s.dir == 1 ? "low" : "high") + "\n";
+   }
+   else
+   {
+      bool usedFallback = (s.zoneHigh == s.lockedHigh && s.zoneLow == s.lockedLow);
+      string zoneDesc = usedFallback ? "range fallback (no qualifying FVG)" : "Fair Value Gap";
+      info += "Zone (" + zoneDesc + "): " + DoubleToString(s.zoneLow, _Digits) + " - " + DoubleToString(s.zoneHigh, _Digits) + "\n";
+   }
+
+   info += "Entry: " + DoubleToString(s.entryPrice, _Digits) + "   SL: " + DoubleToString(s.slPrice, _Digits) + "\n";
+   info += "TP1: " + DoubleToString(s.tp1Price, _Digits);
+   if(g_numTPs >= 2) info += "   TP2: " + DoubleToString(s.tp2Price, _Digits);
+   if(g_numTPs == 3) info += "   TP3: " + DoubleToString(s.tp3Price, _Digits);
+   info += "\n";
+   info += "Risk (1R): " + DoubleToString(r, _Digits) + "\n";
+   info += "Breakout: " + TimeToString(s.breakoutBarTime, TIME_DATE | TIME_MINUTES)
+         + "   Entry: " + TimeToString(s.entryTime, TIME_DATE | TIME_MINUTES);
+   if(s.flipsUsed > 0)
+      info += "\nFlip #" + IntegerToString(s.flipsUsed) + " on this range after a prior SL";
+
+   string name = s.tag + "_info";
+   ObjectCreate(0, name, OBJ_TEXT, 0, s.entryTime, s.entryPrice);
+   ObjectSetString(0, name, OBJPROP_TEXT, " i");
+   ObjectSetInteger(0, name, OBJPROP_COLOR, clrDeepSkyBlue);
+   ObjectSetInteger(0, name, OBJPROP_FONTSIZE, 9);
+   ObjectSetInteger(0, name, OBJPROP_ANCHOR, ANCHOR_CENTER);
+   ObjectSetString(0, name, OBJPROP_TOOLTIP, info);
 }
 
 // Entry/SL/TP price tags that slide forward with the trade -- matching the
