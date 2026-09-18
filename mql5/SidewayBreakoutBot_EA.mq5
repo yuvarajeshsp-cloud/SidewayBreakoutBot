@@ -671,9 +671,13 @@ void ProcessNewBar()
                DeleteZoneBox(s);
                removeThis = true;
             }
-            else
+            else if(!ExecuteEntry(s, candidateEntry, candidateSl, r, false))
             {
-               ExecuteEntry(s, candidateEntry, candidateSl, r, false);
+               // Couldn't afford it (or the broker rejected it) -- don't leave
+               // this setup in place to silently retry the same failed entry
+               // every bar until it times out.
+               DeleteZoneBox(s);
+               removeThis = true;
             }
          }
          else if(invalidated || minutesSinceBreakout > InpRetraceTimeoutMin)
@@ -706,7 +710,13 @@ void ProcessNewBar()
          RemoveSetupAt(idx);
          continue;
       }
-      ExecuteEntry(s, entryOpen, candidateSl, r, true);
+      if(!ExecuteEntry(s, entryOpen, candidateSl, r, true))
+      {
+         // Same reasoning as the STATE 2 site: an unaffordable/rejected entry
+         // must not leave the setup in place to keep retrying every bar.
+         RemoveSetupAt(idx);
+         continue;
+      }
       g_setups[idx] = s;
    }
 
@@ -737,16 +747,47 @@ void ProcessNewBar()
 // ENTRY EXECUTION
 //====================================================================
 
-void ExecuteEntry(SSetup &s, double entryPrice, double slPrice, double r, bool isImpulseEntry)
+bool ExecuteEntry(SSetup &s, double entryPrice, double slPrice, double r, bool isImpulseEntry)
 {
    double riskAmount = AccountInfoDouble(ACCOUNT_EQUITY) * (InpRiskPercent / 100.0);
    double tickValue = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
    double tickSize  = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
-   if(tickSize <= 0 || tickValue <= 0 || r <= 0) return;
+   if(tickSize <= 0 || tickValue <= 0 || r <= 0) return(false);
 
    double lots = riskAmount / (r / tickSize * tickValue);
    lots = NormalizeLots(lots);
-   if(lots <= 0) return;
+   if(lots <= 0) return(false);
+
+   // Each TP tier partially closes the position, and a slice smaller than one
+   // broker volume step rounds down to 0 lots (PartialClose() would then try
+   // to close nothing). Bump the size up to whatever the configured TP count
+   // needs so every tier's slice is at least one step -- this can push the
+   // trade's real risk above InpRiskPercent on very small accounts/symbols,
+   // but a skipped TP fill is worse than a slightly larger risk.
+   double lotUnit = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
+   if(lotUnit <= 0) lotUnit = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
+   double minLotsForSplits = g_numTPs * lotUnit;
+   if(lots < minLotsForSplits) lots = NormalizeLots(minLotsForSplits);
+
+   // Pre-trade margin check -- riskAmount alone says nothing about whether
+   // the account can actually afford this many lots' margin. Without this,
+   // a rejected order used to leave the setup stuck in place, silently
+   // retrying the same failed entry every bar until it timed out.
+   ENUM_ORDER_TYPE orderType = (s.dir == 1) ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
+   double checkPrice = (s.dir == 1) ? SymbolInfoDouble(_Symbol, SYMBOL_ASK) : SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   double marginRequired = 0.0;
+   if(!OrderCalcMargin(orderType, _Symbol, lots, checkPrice, marginRequired))
+   {
+      Print("SidewayBreakoutBot: margin calc failed for ", s.tag, ", skipping entry");
+      return(false);
+   }
+   double freeMargin = AccountInfoDouble(ACCOUNT_MARGIN_FREE);
+   if(marginRequired > freeMargin)
+   {
+      Print("SidewayBreakoutBot: skipped ", s.tag, " -- needs $", DoubleToString(marginRequired, 2),
+            " margin for ", DoubleToString(lots, 2), " lots, only $", DoubleToString(freeMargin, 2), " free");
+      return(false);
+   }
 
    double tp1 = (s.dir == 1) ? entryPrice + r * InpTp1R : entryPrice - r * InpTp1R;
    double tp2 = (s.dir == 1) ? entryPrice + r * InpTp2R : entryPrice - r * InpTp2R;
@@ -766,7 +807,7 @@ void ExecuteEntry(SSetup &s, double entryPrice, double slPrice, double r, bool i
    if(!ok)
    {
       Print("SidewayBreakoutBot: entry failed for ", s.tag, " retcode=", trade.ResultRetcode());
-      return;
+      return(false);
    }
 
    ulong dealTicket = trade.ResultDeal();
@@ -807,6 +848,7 @@ void ExecuteEntry(SSetup &s, double entryPrice, double slPrice, double r, bool i
 
    DrawTradeVisuals(s);
    CreateInfoMarker(s, realR);
+   return(true);
 }
 
 //====================================================================

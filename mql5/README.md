@@ -57,6 +57,16 @@ Stagnant counts, total R, and real gain/loss in $ and %).
    % figures are actual account results, not an approximation from R
    multiples and a hypothetical balance.
 
+7. **Lot sizing has no Pine equivalent to mirror** (backtests have unlimited
+   capital). `InpRiskPercent` of account equity, divided by the stop
+   distance's per-lot value (via the symbol's tick size/value), gives the
+   base lot size; it's then bumped up if needed so every configured TP tier's
+   partial-close slice is still at least one broker volume step (e.g. 3 TPs
+   needs at least 3 × the symbol's minimum lot), and checked against free
+   margin via `OrderCalcMargin()` before the order is sent. If the account
+   can't afford even that minimum-viable size, the setup is skipped (logged)
+   instead of retrying the same entry every bar.
+
 ## Keeping this in sync with the Pine version
 
 Going forward, changes made to the Pine Strategy/Indicator (the state
