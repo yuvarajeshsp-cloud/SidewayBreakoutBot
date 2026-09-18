@@ -769,6 +769,17 @@ bool ExecuteEntry(SSetup &s, double entryPrice, double slPrice, double r, bool i
    double minLotsForSplits = g_numTPs * lotUnit;
    if(lots < minLotsForSplits) lots = NormalizeLots(minLotsForSplits);
 
+   // On a small enough account/stop distance, the broker's own minimum lot
+   // (and the TP-split floor above) can force a size larger than what
+   // InpRiskPercent alone would size -- log it so it's visible in the
+   // journal rather than a silent surprise the first time a stop is hit.
+   double actualRiskCash = (r / tickSize) * tickValue * lots;
+   if(actualRiskCash > riskAmount * 1.01)
+      Print("SidewayBreakoutBot: ", s.tag, " -- broker minimum lot / TP-split floor forced ",
+            DoubleToString(lots, 2), " lots, risking $", DoubleToString(actualRiskCash, 2),
+            " vs the configured $", DoubleToString(riskAmount, 2),
+            " (", DoubleToString(actualRiskCash / riskAmount * 100.0 - 100.0, 0), "% over)");
+
    // Pre-trade margin check -- riskAmount alone says nothing about whether
    // the account can actually afford this many lots' margin. Without this,
    // a rejected order used to leave the setup stuck in place, silently

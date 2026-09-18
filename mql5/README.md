@@ -65,7 +65,12 @@ Stagnant counts, total R, and real gain/loss in $ and %).
    needs at least 3 × the symbol's minimum lot), and checked against free
    margin via `OrderCalcMargin()` before the order is sent. If the account
    can't afford even that minimum-viable size, the setup is skipped (logged)
-   instead of retrying the same entry every bar.
+   instead of retrying the same entry every bar. On a small enough account
+   or a tight stop, the broker's own minimum lot (and that TP-split floor)
+   can force a bigger size than `InpRiskPercent` alone would size — the EA
+   still takes the trade, but logs a warning naming the actual $ risked vs.
+   what was configured whenever this happens, so it's visible in the
+   journal rather than a surprise the first time a stop is hit.
 
 ## Keeping this in sync with the Pine version
 
