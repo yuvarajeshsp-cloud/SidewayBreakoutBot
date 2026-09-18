@@ -191,8 +191,20 @@ datetime g_rangeLeftTime = 0;
 datetime g_rangeRightTime= 0;
 int      g_rangeState    = 0;    // 0 unbroken, 1 broke up, -1 broke down
 
-// normalized TP % (last active tier absorbs the remainder, mirrors Pine)
-double g_tp1Pct, g_tp2Pct, g_tp3Pct;
+// The dashboard only needs a real redraw when g_history actually grows (a
+// trade just closed) or a new bar starts (the Today/Week/Month rolling
+// cutoff can drift a trade in or out of the window as time passes, but
+// only gradually -- once-per-bar is plenty). Without this, UpdateDashboard()
+// rebuilding ~25 chart objects on every single tick is real, avoidable
+// overhead in "Every tick" Strategy Tester runs.
+bool     g_dashboardDirty = true;
+
+// normalized TP % for TP1/TP2 (mirrors Pine's tp1Pct/tp2Pct). TP3 never
+// needs its own percentage: it's always the final tier and PartialClose()
+// already caps a 100%-of-original close to whatever volume is actually
+// left, giving the same "close the remainder" result Pine's tp3Pct-sized
+// qty_percent order achieves through its own, different mechanism.
+double g_tp1Pct, g_tp2Pct;
 int    g_numTPs;
 
 int g_sessStartMin = 600;   // minutes since midnight
@@ -206,9 +218,9 @@ int OnInit()
 {
    g_numTPs = (int)MathMax(1, MathMin(3, InpNumTPs));
 
-   if(g_numTPs == 1)      { g_tp1Pct = 100.0; g_tp2Pct = 0.0;  g_tp3Pct = 0.0; }
-   else if(g_numTPs == 2) { g_tp1Pct = InpTp1Qty; g_tp2Pct = 100.0 - InpTp1Qty; g_tp3Pct = 0.0; }
-   else                   { g_tp1Pct = InpTp1Qty; g_tp2Pct = InpTp2Qty; g_tp3Pct = MathMax(0.0, 100.0 - InpTp1Qty - InpTp2Qty); }
+   if(g_numTPs == 1)      { g_tp1Pct = 100.0; g_tp2Pct = 0.0; }
+   else if(g_numTPs == 2) { g_tp1Pct = InpTp1Qty; g_tp2Pct = 100.0 - InpTp1Qty; }
+   else                   { g_tp1Pct = InpTp1Qty; g_tp2Pct = InpTp2Qty; }
 
    if(!ParseHHMM(InpSessionStart, g_sessStartMin))
    {
@@ -751,6 +763,11 @@ void ProcessNewBar()
          PushSetup(ns);
       }
    }
+
+   // Force one redraw per bar even with no new trade: the dashboard's
+   // Today/Week/Month rolling cutoff is time-based and can drift a trade
+   // in or out of the window purely from time passing (see g_dashboardDirty).
+   g_dashboardDirty = true;
 }
 
 //====================================================================
@@ -927,7 +944,7 @@ void ProcessPerTick()
    }
 
    if(InpShowTradeLines || InpShowRRBoxes) StretchOpenTradeVisuals();
-   if(InpShowDashboard)  UpdateDashboard();
+   if(InpShowDashboard && g_dashboardDirty) { UpdateDashboard(); g_dashboardDirty = false; }
 }
 
 //====================================================================
@@ -1108,6 +1125,7 @@ void FinalizeTrade(SSetup &s, string exitReason, int tpsReached)
    int n = ArraySize(g_history);
    ArrayResize(g_history, n + 1);
    g_history[n] = rec;
+   g_dashboardDirty = true;
 
    // Matches Pine: the flip re-arm fires on ANY stop-out -- the sticky
    // stopWasHit flag there doesn't distinguish the original SL from a
