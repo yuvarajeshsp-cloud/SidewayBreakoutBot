@@ -107,13 +107,7 @@ if rangeEvent
         lvl.set_xy2(n, avg)
         lvl.set_color(unbrokenCss)
     else
-        // Otherwise this is a genuinely new range -- delete the previous range's
-        // leftover box/midline first (so old, no-longer-relevant ranges don't pile up
-        // on the chart forever), then draw a fresh box/midline for this one.
-        if not na(bx)
-            box.delete(bx)
-        if not na(lvl)
-            line.delete(lvl)
+        // Otherwise this is a genuinely new range -- draw a fresh box/midline.
         rMax := ma + rAtr
         rMin := ma - rAtr
         bx := box.new(n[rangeLength], ma + rAtr, n, ma - rAtr, na, bgcolor=color.new(unbrokenCss, 80))
