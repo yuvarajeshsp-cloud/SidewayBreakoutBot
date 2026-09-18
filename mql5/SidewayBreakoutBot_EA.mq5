@@ -106,6 +106,8 @@ input bool   InpShowTradeLines      = true;   // Show Entry/SL/TP Lines
 input bool   InpShowRRBoxes         = true;   // Show Risk/Reward Boxes (TradingView-style RR tool)
 input double InpBoxTransparencyPct  = 80.0;   // RR Box Transparency % (0=solid, 100=invisible; simulated via background blend -- see header note 5)
 input int    InpMinWidthBars        = 30;     // Minimum RR Box/Line Width (bars) -- how wide a brand-new entry starts before it grows
+input bool   InpShowPriceTags       = true;   // Show Entry/SL/TP Price Tags (slide with the trade, like the Pine indicator)
+input bool   InpShowHitMarkers      = true;   // Show TP1/TP2/TP3/SL Hit Dots (fixed at the exact candle each level was hit)
 
 input group "Dashboard"
 input bool   InpShowDashboard        = true;      // Show Trade Summary Dashboard (chart comment)
@@ -835,6 +837,7 @@ void ManageOpenPosition(SSetup &s, double bid, double ask)
       if(hit)
       {
          s.tp1Filled = true;
+         if(InpShowHitMarkers) CreateHitMarker(s.tag + "_hit_tp1", iTime(_Symbol, _Period, 0), s.tp1Price, "TP1", clrLimeGreen);
          double pct = (g_numTPs == 1) ? 100.0 : g_tp1Pct;
          PartialClose(s, pct, s.tp1Price, riskDistance);
          if(g_numTPs == 1) { FinalizeTrade(s, "TP1", 1); return; }
@@ -848,6 +851,7 @@ void ManageOpenPosition(SSetup &s, double bid, double ask)
       if(hit)
       {
          s.tp2Filled = true;
+         if(InpShowHitMarkers) CreateHitMarker(s.tag + "_hit_tp2", iTime(_Symbol, _Period, 0), s.tp2Price, "TP2", clrLimeGreen);
          if(g_numTPs == 2) { PartialClose(s, 100.0, s.tp2Price, riskDistance); FinalizeTrade(s, "TP2", 2); return; }
          PartialClose(s, g_tp2Pct, s.tp2Price, riskDistance);
       }
@@ -859,6 +863,7 @@ void ManageOpenPosition(SSetup &s, double bid, double ask)
       bool hit = (s.dir == 1) ? (bid >= s.tp3Price) : (ask <= s.tp3Price);
       if(hit)
       {
+         if(InpShowHitMarkers) CreateHitMarker(s.tag + "_hit_tp3", iTime(_Symbol, _Period, 0), s.tp3Price, "TP3", clrLimeGreen);
          PartialClose(s, 100.0, s.tp3Price, riskDistance);
          FinalizeTrade(s, "TP3", 3);
          return;
@@ -873,6 +878,10 @@ void ManageOpenPosition(SSetup &s, double bid, double ask)
    bool stopHit = (s.dir == 1) ? (bid <= stopNow) : (ask >= stopNow);
    if(stopHit)
    {
+      // Matches the Pine version: the dot always reads "SL" here, whether or
+      // not the stop had already moved to breakeven -- Breakeven vs SL is a
+      // dashboard/history distinction, not a different on-chart marker.
+      if(InpShowHitMarkers) CreateHitMarker(s.tag + "_hit_sl", iTime(_Symbol, _Period, 0), stopNow, "SL", clrRed);
       PartialClose(s, 100.0, stopNow, riskDistance);
       int tpsReached = (s.tp1Filled ? 1 : 0) + (s.tp2Filled ? 1 : 0);
       FinalizeTrade(s, (stopNow == s.entryPrice) ? "Breakeven" : "SL", tpsReached);
@@ -1079,6 +1088,15 @@ void DrawTradeVisuals(SSetup &s)
       CreateBox(s.tag + "_rewardbox", t1, s.entryPrice, t2, lastTpPrice, rewardClr);
    }
 
+   if(InpShowPriceTags)
+   {
+      UpdatePriceTag(s.tag + "_entrytag", t2, s.entryPrice, "Entry", clrWhite);
+      UpdatePriceTag(s.tag + "_sltag",    t2, s.slPrice,    "SL",    clrRed);
+      UpdatePriceTag(s.tag + "_tp1tag",   t2, s.tp1Price,   "TP1",   clrLimeGreen);
+      if(g_numTPs >= 2) UpdatePriceTag(s.tag + "_tp2tag", t2, s.tp2Price, "TP2", clrLimeGreen);
+      if(g_numTPs == 3) UpdatePriceTag(s.tag + "_tp3tag", t2, s.tp3Price, "TP3", clrLimeGreen);
+   }
+
    if(!InpShowTradeLines) return;
    CreateLine(s.tag + "_entry", t1, s.entryPrice, t2, s.entryPrice, clrWhite);
    CreateLine(s.tag + "_sl",    t1, s.slPrice,    t2, s.slPrice,    clrRed);
@@ -1106,6 +1124,41 @@ void CreateBox(string name, datetime t1, double p1, datetime t2, double p2, colo
    ObjectSetInteger(0, name, OBJPROP_RAY_RIGHT, false);
 }
 
+// A small dot+text marker pinned at the exact candle/price a level was hit --
+// created once and never moved again, matching the Pine indicator's
+// TP1/TP2/TP3/SL "hit" labels (label.style_circle there).
+void CreateHitMarker(string name, datetime t, double price, string txt, color clr)
+{
+   if(ObjectFind(0, name) >= 0) return; // already marked, never redraw/move it
+   string dotName = name + "_dot";
+   ObjectCreate(0, dotName, OBJ_ARROW, 0, t, price);
+   ObjectSetInteger(0, dotName, OBJPROP_ARROWCODE, 159); // Wingdings filled circle
+   ObjectSetInteger(0, dotName, OBJPROP_COLOR, clr);
+   ObjectSetInteger(0, dotName, OBJPROP_WIDTH, 2);
+
+   ObjectCreate(0, name, OBJ_TEXT, 0, t, price);
+   ObjectSetString(0, name, OBJPROP_TEXT, " " + txt);
+   ObjectSetInteger(0, name, OBJPROP_COLOR, clr);
+   ObjectSetInteger(0, name, OBJPROP_FONTSIZE, 8);
+   ObjectSetInteger(0, name, OBJPROP_ANCHOR, ANCHOR_LEFT);
+}
+
+// Entry/SL/TP price tags that slide forward with the trade -- matching the
+// Pine indicator's entryTag/slTag/tp1Tag/etc (label.style_label_left there).
+void UpdatePriceTag(string name, datetime t, double price, string prefix, color clr)
+{
+   string txt = prefix + " (" + DoubleToString(price, _Digits) + ")";
+   if(ObjectFind(0, name) < 0)
+   {
+      ObjectCreate(0, name, OBJ_TEXT, 0, t, price);
+      ObjectSetInteger(0, name, OBJPROP_FONTSIZE, 8);
+      ObjectSetInteger(0, name, OBJPROP_ANCHOR, ANCHOR_LEFT);
+   }
+   ObjectMove(0, name, 0, t, price);
+   ObjectSetString(0, name, OBJPROP_TEXT, " " + txt);
+   ObjectSetInteger(0, name, OBJPROP_COLOR, clr);
+}
+
 void StretchOpenTradeVisuals()
 {
    datetime now = TimeCurrent();
@@ -1116,17 +1169,29 @@ void StretchOpenTradeVisuals()
       SSetup s = g_setups[i];
       string base = s.tag;
 
-      string names[5] = {"_entry", "_sl", "_tp1", "_tp2", "_tp3"};
-      for(int k = 0; k < 5; k++)
+      // stopNow: the current (possibly breakeven-adjusted) stop -- everything
+      // SL-related (line, risk box, price tag) tracks this, not the original
+      // s.slPrice, exactly like the Pine version's per-bar slLine/slTag update.
+      double stopNow = (g_numTPs >= 2 && s.tp1Filled && InpMoveToBEAfterTP1) ? s.entryPrice : s.slPrice;
+
+      // Entry/TP lines: extend the right edge, keep the same price.
+      string tpNames[4] = {"_entry", "_tp1", "_tp2", "_tp3"};
+      for(int k = 0; k < 4; k++)
       {
-         string nm = base + names[k];
+         string nm = base + tpNames[k];
          if(ObjectFind(0, nm) >= 0)
             ObjectMove(0, nm, 1, now, ObjectGetDouble(0, nm, OBJPROP_PRICE, 1));
       }
+      // SL line: extend the right edge AND follow stopNow.
+      string slLine = base + "_sl";
+      if(ObjectFind(0, slLine) >= 0)
+      {
+         ObjectMove(0, slLine, 0, s.entryTime, stopNow);
+         ObjectMove(0, slLine, 1, now, stopNow);
+      }
 
-      // Risk box's SL edge follows the current (possibly breakeven-adjusted)
-      // stop, exactly like the SL line above and the Pine version's slLine.
-      double stopNow = (g_numTPs >= 2 && s.tp1Filled && InpMoveToBEAfterTP1) ? s.entryPrice : s.slPrice;
+      // Risk/reward boxes: risk box's SL edge follows stopNow; reward box's
+      // TP edge is unchanged, only the time extends.
       string riskBox = base + "_riskbox";
       if(ObjectFind(0, riskBox) >= 0)
       {
@@ -1136,6 +1201,17 @@ void StretchOpenTradeVisuals()
       string rewardBox = base + "_rewardbox";
       if(ObjectFind(0, rewardBox) >= 0)
          ObjectMove(0, rewardBox, 1, now, ObjectGetDouble(0, rewardBox, OBJPROP_PRICE, 1));
+
+      // Price tags slide to the same right edge; the SL tag's price/text
+      // also follow stopNow, matching the Pine version's slTag update.
+      if(InpShowPriceTags)
+      {
+         UpdatePriceTag(base + "_entrytag", now, s.entryPrice, "Entry", clrWhite);
+         UpdatePriceTag(base + "_sltag",    now, stopNow,      "SL",    clrRed);
+         UpdatePriceTag(base + "_tp1tag",   now, s.tp1Price,   "TP1",   clrLimeGreen);
+         if(g_numTPs >= 2) UpdatePriceTag(base + "_tp2tag", now, s.tp2Price, "TP2", clrLimeGreen);
+         if(g_numTPs == 3) UpdatePriceTag(base + "_tp3tag", now, s.tp3Price, "TP3", clrLimeGreen);
+      }
    }
 }
 
