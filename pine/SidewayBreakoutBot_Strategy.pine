@@ -114,7 +114,14 @@ freshRange = false
 if rangeEvent
     // If the new range overlaps the box still being drawn from a previous range,
     // just stretch that same box/line to cover both instead of starting a new one.
-    if n[rangeLength] <= bx.get_right()
+    // Overlap requires PRICE too, not just time being adjacent to bx.get_right() --
+    // time-adjacency alone lets an unrelated brief pause partway through a real
+    // trend get merged into the old box just because it follows closely after it.
+    // Since this merge only ever grows the box (math.max/math.min below never
+    // shrink it), a trend with several such pauses would otherwise accumulate one
+    // ever-widening "range" spanning the whole move, which a real breakout then
+    // essentially never clears.
+    if n[rangeLength] <= bx.get_right() and (ma + rAtr) >= bx.get_bottom() and (ma - rAtr) <= bx.get_top()
         rMax := math.max(ma + rAtr, bx.get_top())
         rMin := math.min(ma - rAtr, bx.get_bottom())
         bx.set_top(rMax)
