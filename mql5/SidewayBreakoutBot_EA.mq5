@@ -487,7 +487,17 @@ bool ComputeFreshRange(double &outRMax, double &outRMin, datetime &outLockTime)
    double newBot = ma - rAtr;
    datetime leftTime = iTime(_Symbol, _Period, base + InpRangeLength);
 
-   bool overlapsExisting = g_rangeActive && (leftTime <= g_rangeRightTime);
+   // Merging requires the new pause to genuinely overlap the existing box in
+   // PRICE too, not just be adjacent in time. Time-overlap alone (the
+   // original LuxAlgo condition) lets an unrelated brief pause partway
+   // through a real trend get merged into the old box just because it
+   // follows closely after it -- each merge only ever grows the box
+   // (MathMax/MathMin below never shrink it), so a trend with several such
+   // pauses accumulates one ever-widening "range" spanning the whole move,
+   // which a real breakout then essentially never clears.
+   bool timeOverlaps  = g_rangeActive && (leftTime <= g_rangeRightTime);
+   bool priceOverlaps = g_rangeActive && (newTop >= g_rangeBottom) && (newBot <= g_rangeTop);
+   bool overlapsExisting = timeOverlaps && priceOverlaps;
    if(overlapsExisting)
    {
       g_rangeTop    = MathMax(newTop, g_rangeTop);
