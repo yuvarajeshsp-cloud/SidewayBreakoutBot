@@ -4,10 +4,12 @@
 // over the last `rangeLength` bars is tighter than `rangeSensitivity` x ATR, its bounds
 // are locked and never change again until price closes outside them.
 //
-// This first pass only handles detection + the visual: three lines (top/bottom/middle,
-// no box), each extended a fixed number of bars past the detection bar, with a price
-// label at the end of each. Breakout/entry/TP/SL logic isn't wired up yet -- being
-// built incrementally, step by step.
+// This first pass only handles detection + the visual: two lines (top/bottom, no
+// middle, no box), each extended a fixed number of bars past the detection bar, with
+// a price label at the end of each. Only the MOST RECENT range's lines are ever kept
+// on the chart -- the previous range's lines/labels are deleted the instant a new one
+// is detected, instead of piling up forever. Breakout/entry/TP/SL logic isn't wired up
+// yet -- being built incrementally, step by step.
 //@version=6
 indicator("Sideway Breakout Bot [Indicator - Range Intel]", overlay=true, max_lines_count=500, max_labels_count=500)
 
@@ -16,18 +18,15 @@ grpRange = "Range Detector"
 rangeLength = input.int(20, "Detection Length", minval=5, group=grpRange)                   // lookback window used for both the highest-high/lowest-low span and its own ATR
 rangeSensitivity = input.float(4.0, "Range Sensitivity (x ATR)", minval=0.1, step=0.1, group=grpRange) // how tight the highest-high-to-lowest-low span must be (relative to ATR) to count as a range
 rangeAtrLen = input.int(200, "Range ATR Length", minval=1, group=grpRange)                   // ATR length used only for sizing the range test -- shortened from a longer default so it tracks the CURRENT volatility regime on 1-min charts
-lineExtendBars = input.int(30, "Extend Lines (bars)", minval=1, group=grpRange)              // how far past the detection bar the top/bottom/middle lines stick out
+lineExtendBars = input.int(30, "Extend Lines (bars)", minval=1, group=grpRange)              // how far past the detection bar the top/bottom lines stick out
 topCss = input.color(#089981, "Top Line", group=grpRange)
 botCss = input.color(#f23645, "Bottom Line", group=grpRange)
-midCss = input.color(#787b86, "Middle Line", group=grpRange)
 
 // ───────────────────────────── Range Detector (Donchian-width squeeze) ─────────────────────────────
 var line  topLine     = na
 var line  botLine     = na
-var line  midLine     = na
 var label topLbl      = na
 var label botLbl      = na
-var label midLbl      = na
 var float rMax        = na   // top of the currently locked range (frozen once set, until it breaks)
 var float rMin        = na   // bottom of the currently locked range (frozen once set, until it breaks)
 var bool  rangeActive = false
@@ -45,20 +44,25 @@ isConsolidating = rangeWidth < rangeSensitivity * rAtr
 if barstate.isconfirmed
     if isConsolidating and not rangeActive
         // A brand-new range -- lock its bounds now; they won't be revisited until it breaks.
+        // Clear out the previous range's lines/labels first so the chart only ever shows
+        // the current one, instead of every past range accumulating forever.
+        if not na(topLine)
+            line.delete(topLine)
+            line.delete(botLine)
+            label.delete(topLbl)
+            label.delete(botLbl)
+
         rangeActive := true
         rMax := hh
         rMin := ll
-        mid = math.avg(hh, ll)
         leftBar = n - rangeLength + 1
         rightBar = n + lineExtendBars
 
         topLine := line.new(leftBar, hh, rightBar, hh, color=topCss, width=2)
         botLine := line.new(leftBar, ll, rightBar, ll, color=botCss, width=2)
-        midLine := line.new(leftBar, mid, rightBar, mid, color=midCss, style=line.style_dashed)
 
         topLbl := label.new(rightBar, hh, str.tostring(hh, format.mintick), style=label.style_label_left, color=color.new(topCss, 0), textcolor=color.white, size=size.small)
         botLbl := label.new(rightBar, ll, str.tostring(ll, format.mintick), style=label.style_label_left, color=color.new(botCss, 0), textcolor=color.white, size=size.small)
-        midLbl := label.new(rightBar, mid, str.tostring(mid, format.mintick), style=label.style_label_left, color=color.new(midCss, 0), textcolor=color.white, size=size.small)
 
     // A locked range is done, permanently, the instant price closes outside it --
     // frees detection to find a brand-new range on a later bar.
