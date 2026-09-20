@@ -9,6 +9,7 @@ grpRange = "Range Detector"
 rangeLength = input.int(20, "Minimum Range Length", minval=2, group=grpRange)              // how many bars must stay inside the ATR band before a "sideways" range is recognized
 rangeMult   = input.float(1.0, "Range Width", minval=0, step=0.1, group=grpRange)          // multiplies the ATR band below -- bigger = tolerates more noise as still "sideways"
 rangeAtrLen = input.int(200, "Range ATR Length", minval=1, group=grpRange)                 // ATR length used only for sizing the range band (separate from the SL/filter ATR below) -- shortened from 500 for 1-min charts so it tracks the CURRENT volatility regime instead of blending in multiple sessions' worth of history
+maxRangeWidthAtrMult = input.float(3.0, "Max Range Width (x raw ATR, 0 = no cap)", minval=0, step=0.5, group=grpRange) // hard cap on the box's total height even when a new pause genuinely overlaps the existing box in both price and time -- without this, a slow grind of several small, truly-overlapping pauses could still merge into one large box; once a merge would exceed this cap the range resets fresh instead of growing further
 upCss       = input.color(#089981, "Broken Upward", group=grpRange)                        // range box/line color once price closes above it
 dnCss       = input.color(#f23645, "Broken Downward", group=grpRange)                      // range box/line color once price closes below it
 unbrokenCss = input.color(#2157f3, "Unbroken", group=grpRange)                             // range box/line color while still intact
@@ -81,7 +82,8 @@ var int   rOs  = 0    // 0 = still inside the range, 1 = broke up, -1 = broke do
 color detect_css = na
 
 n = bar_index
-rAtr = ta.atr(rangeAtrLen) * rangeMult   // how far price may wander from the SMA and still count as "sideways"
+rawAtr = ta.atr(rangeAtrLen)             // unscaled ATR, used only for the max-width cap below so the cap stays independent of the Range Width multiplier
+rAtr = rawAtr * rangeMult   // how far price may wander from the SMA and still count as "sideways"
 ma = ta.sma(close, rangeLength)
 
 // Count how many of the last `rangeLength` closes are further than `rAtr` from the SMA.
@@ -110,9 +112,17 @@ if rangeEvent
     // shrink it), a trend with several such pauses would otherwise accumulate one
     // ever-widening "range" spanning the whole move, which a real breakout then
     // essentially never clears.
-    if n[rangeLength] <= bx.get_right() and (ma + rAtr) >= bx.get_bottom() and (ma - rAtr) <= bx.get_top()
-        rMax := math.max(ma + rAtr, bx.get_top())
-        rMin := math.min(ma - rAtr, bx.get_bottom())
+    overlapsExisting = not na(bx) and n[rangeLength] <= bx.get_right() and (ma + rAtr) >= bx.get_bottom() and (ma - rAtr) <= bx.get_top()
+    mergedTop = overlapsExisting ? math.max(ma + rAtr, bx.get_top()) : na
+    mergedBot = overlapsExisting ? math.min(ma - rAtr, bx.get_bottom()) : na
+    // Even a genuinely price-and-time overlapping pause shouldn't be allowed to
+    // stretch the box past a sane size forever -- a slow grind of several small,
+    // truly-overlapping pauses could otherwise still produce one oversized box.
+    // Past this cap, treat it as a fresh range instead of another merge.
+    withinWidthCap = maxRangeWidthAtrMult <= 0 or not overlapsExisting or (mergedTop - mergedBot) <= maxRangeWidthAtrMult * rawAtr
+    if overlapsExisting and withinWidthCap
+        rMax := mergedTop
+        rMin := mergedBot
         bx.set_top(rMax)
         bx.set_rightbottom(n, rMin)
         bx.set_bgcolor(color.new(unbrokenCss, 80))

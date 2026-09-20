@@ -57,6 +57,7 @@ input group "Range Detector"
 input int    InpRangeLength         = 20;     // Minimum Range Length (bars)
 input double InpRangeMult           = 1.0;    // Range Width (x ATR)
 input int    InpRangeAtrLen         = 200;    // Range ATR Length
+input double InpRangeMaxWidthAtrMult= 3.0;    // Max Range Width (x raw ATR, 0 = no cap)
 input int    InpMaxBarsWatch        = 50;     // Max Bars to Wait for Breakout
 input bool   InpAllowStackedEntries = true;   // Allow Stacked Entries
 input int    InpMaxConcurrentSetups = 3;      // Max Concurrent Setups (needs a HEDGING account, see header)
@@ -458,7 +459,8 @@ void FindFVGZone(int dir, datetime lockTime, double lockedHigh, double lockedLow
 bool ComputeFreshRange(double &outRMax, double &outRMin, datetime &outLockTime)
 {
    int base = 1; // the just-closed bar
-   double rAtr = GetAtrRange(base) * InpRangeMult;
+   double rawAtr = GetAtrRange(base); // unscaled, used only for the max-width cap so it stays independent of InpRangeMult
+   double rAtr = rawAtr * InpRangeMult;
    double ma   = GetSMA(base, InpRangeLength);
 
    int rCount = 0;
@@ -498,10 +500,20 @@ bool ComputeFreshRange(double &outRMax, double &outRMin, datetime &outLockTime)
    bool timeOverlaps  = g_rangeActive && (leftTime <= g_rangeRightTime);
    bool priceOverlaps = g_rangeActive && (newTop >= g_rangeBottom) && (newBot <= g_rangeTop);
    bool overlapsExisting = timeOverlaps && priceOverlaps;
-   if(overlapsExisting)
+
+   // Even a genuinely price-and-time overlapping pause shouldn't be allowed to
+   // stretch the box past a sane size forever -- a slow grind of several small,
+   // truly-overlapping pauses could otherwise still produce one oversized box.
+   // Past this cap, treat it as a fresh range instead of another merge.
+   double mergedTop = overlapsExisting ? MathMax(newTop, g_rangeTop)    : 0.0;
+   double mergedBot = overlapsExisting ? MathMin(newBot, g_rangeBottom) : 0.0;
+   bool withinWidthCap = (InpRangeMaxWidthAtrMult <= 0) || !overlapsExisting ||
+                         ((mergedTop - mergedBot) <= InpRangeMaxWidthAtrMult * rawAtr);
+
+   if(overlapsExisting && withinWidthCap)
    {
-      g_rangeTop    = MathMax(newTop, g_rangeTop);
-      g_rangeBottom = MathMin(newBot, g_rangeBottom);
+      g_rangeTop    = mergedTop;
+      g_rangeBottom = mergedBot;
       g_rangeRightTime = iTime(_Symbol, _Period, base);
       g_rangeState = 0;
       UpdateRangeBox();
