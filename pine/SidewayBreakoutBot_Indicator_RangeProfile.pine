@@ -1,0 +1,179 @@
+// New indicator: reuses this project's own Donchian-width-vs-ATR range detector (the
+// same squeeze test as SidewayBreakoutBot_Indicator_RangeIntel.pine) and layers a
+// bar-by-bar volume profile with a Point of Control, liquidity-sweep tagging, and a
+// summary dashboard on top. Entry/TP/SL logic isn't wired up yet -- detection and
+// visuals only, built incrementally.
+//@version=6
+indicator("Sideway Breakout Bot [Indicator - Range Profile]", overlay=true, max_boxes_count=500, max_lines_count=500, max_labels_count=500)
+
+// ───────────────────────────── Inputs ─────────────────────────────
+grpRange = "Range Detector"
+rangeLength = input.int(20, "Detection Length", minval=5, group=grpRange)                    // lookback window used for both the highest-high/lowest-low span and its own ATR
+rangeSensitivity = input.float(4.0, "Range Sensitivity (x ATR)", minval=0.1, step=0.1, group=grpRange) // how tight the highest-high-to-lowest-low span must be (relative to ATR) to count as a range
+rangeAtrLen = input.int(200, "Range ATR Length", minval=1, group=grpRange)                    // ATR length used only for sizing the range test -- kept short so it tracks the CURRENT volatility regime
+upCss       = input.color(#089981, "Broken Upward", group=grpRange)
+dnCss       = input.color(#f23645, "Broken Downward", group=grpRange)
+unbrokenCss = input.color(#2157f3, "Unbroken", group=grpRange)
+
+grpProfile = "Volume Profile"
+showProfileInput     = input.bool(true, "Show Volume Profile", group=grpProfile)
+profileRowsInput     = input.int(12, "Rows", minval=4, maxval=50, group=grpProfile)           // number of horizontal price bins the range is sliced into
+profileWidthPctInput = input.int(25, "Max Bar Width (% of range duration)", minval=5, maxval=100, group=grpProfile) // how far the widest bin is allowed to stick out, as a % of the range's own bar count
+showPocInput = input.bool(true, "Show Point of Control", group=grpProfile)
+pocCss       = input.color(#eab308, "POC Color", group=grpProfile)
+
+grpSweep = "Liquidity Sweeps"
+showSweepsInput = input.bool(true, "Highlight Liquidity Sweeps", group=grpSweep)              // tag wicks that poke outside the range but close back inside it
+
+grpDash = "Dashboard"
+showDashboardInput      = input.bool(true, "Show Dashboard", group=grpDash)
+dashboardPositionInput  = input.string("Top Right", "Position", options=["Top Right", "Top Left", "Bottom Right", "Bottom Left"], group=grpDash)
+dashboardSizeInput      = input.string("Small", "Size", options=["Tiny", "Small", "Normal", "Large", "Huge"], group=grpDash)
+
+// ───────────────────────────── Range Detector (Donchian-width squeeze) ─────────────────────────────
+var box     rangeBox      = na
+var line    pocLine       = na
+var box[]   profileBoxes  = array.new_box(0)
+var float   rangeHigh     = na
+var float   rangeLow      = na
+var int     rangeStartBar = na
+var bool    rangeActive   = false
+var float[] buyVol        = array.new_float(0)
+var float[] sellVol       = array.new_float(0)
+
+n = bar_index
+atrVal = ta.atr(rangeAtrLen)
+hh = ta.highest(high, rangeLength)
+ll = ta.lowest(low, rangeLength)
+rangeWidth = hh - ll
+isConsolidating = rangeWidth < rangeSensitivity * atrVal
+
+bool sweepHigh = false
+bool sweepLow  = false
+
+// barstate.isconfirmed: hh/ll/rangeWidth read this bar's own high/low, still live and
+// changing on every tick until the bar actually finishes -- without this gate a range
+// could lock in (or break out) off an intrabar reading the close never ends up confirming.
+if barstate.isconfirmed
+    if isConsolidating and not rangeActive
+        // A brand-new range -- lock its bounds and start a fresh volume profile. Nothing
+        // from the previous range is deleted -- its box/POC line/profile bars stay on the
+        // chart exactly as they last looked, a permanent record.
+        rangeActive   := true
+        rangeHigh     := hh
+        rangeLow      := ll
+        rangeStartBar := n - rangeLength + 1
+
+        rangeBox := box.new(rangeStartBar, rangeHigh, n, rangeLow, na, bgcolor=color.new(unbrokenCss, 85))
+
+        buyVol  := array.new_float(profileRowsInput, 0.0)
+        sellVol := array.new_float(profileRowsInput, 0.0)
+
+        array.clear(profileBoxes)
+        binSize0 = (rangeHigh - rangeLow) / profileRowsInput
+        if showProfileInput
+            for i = 0 to profileRowsInput - 1
+                array.push(profileBoxes, box.new(n, rangeLow + (i + 1) * binSize0, n, rangeLow + i * binSize0, border_color=na, bgcolor=na))
+
+        if showPocInput
+            pocLine := line.new(rangeStartBar, math.avg(rangeHigh, rangeLow), n, math.avg(rangeHigh, rangeLow), color=pocCss, width=1, style=line.style_dotted)
+    else if rangeActive
+        // Still inside the locked range -- keep stretching the box rightward.
+        rangeBox.set_right(n)
+
+    if rangeActive
+        binSize = (rangeHigh - rangeLow) / profileRowsInput
+        // Bin this bar's volume by where it closed. A full OHLC-bar profile can't know the
+        // true intrabar trade distribution, so bucketing by close is the simple, honest
+        // reading rather than guessing a spread across the bar's wick.
+        binIdx = int(math.max(0, math.min(profileRowsInput - 1, math.floor((close - rangeLow) / binSize))))
+        if close >= open
+            array.set(buyVol, binIdx, array.get(buyVol, binIdx) + volume)
+        else
+            array.set(sellVol, binIdx, array.get(sellVol, binIdx) + volume)
+
+        maxTotal = 0.0
+        pocIdx = 0
+        for i = 0 to profileRowsInput - 1
+            total = array.get(buyVol, i) + array.get(sellVol, i)
+            if total > maxTotal
+                maxTotal := total
+                pocIdx := i
+
+        if showPocInput and not na(pocLine)
+            pocPrice = rangeLow + (pocIdx + 0.5) * binSize
+            pocLine.set_y1(pocPrice)
+            pocLine.set_y2(pocPrice)
+            pocLine.set_x2(n)
+
+        if showProfileInput and array.size(profileBoxes) == profileRowsInput
+            maxWidthBars = math.max(1, math.round((n - rangeStartBar) * profileWidthPctInput / 100.0))
+            for i = 0 to profileRowsInput - 1
+                total = array.get(buyVol, i) + array.get(sellVol, i)
+                width = maxTotal > 0 ? math.round(total / maxTotal * maxWidthBars) : 0
+                bx = array.get(profileBoxes, i)
+                bx.set_left(n)
+                bx.set_right(n + width)
+                barCss = array.get(buyVol, i) >= array.get(sellVol, i) ? upCss : dnCss
+                bx.set_bgcolor(total > 0 ? color.new(barCss, 45) : na)
+
+        // Liquidity sweep: a wick pokes outside the range but the close comes back
+        // inside it -- a classic stop-hunt/fakeout tag, checked before the breakout
+        // recolor below so it never fires on the same bar the range actually breaks.
+        sweepHigh := high > rangeHigh and close <= rangeHigh
+        sweepLow  := low < rangeLow and close >= rangeLow
+
+    // Recolor the box once price closes outside it, and free up detection for a new range.
+    if rangeActive and close > rangeHigh
+        rangeBox.set_bgcolor(color.new(upCss, 85))
+        rangeActive := false
+    else if rangeActive and close < rangeLow
+        rangeBox.set_bgcolor(color.new(dnCss, 85))
+        rangeActive := false
+
+if sweepHigh and showSweepsInput
+    label.new(n, high, "SH", style=label.style_label_down, color=color.new(dnCss, 0), textcolor=color.white, size=size.tiny)
+if sweepLow and showSweepsInput
+    label.new(n, low, "SL", style=label.style_label_up, color=color.new(upCss, 0), textcolor=color.white, size=size.tiny)
+
+// ───────────────────────────── Dashboard ─────────────────────────────
+dashPosition = switch dashboardPositionInput
+    "Top Right"    => position.top_right
+    "Top Left"     => position.top_left
+    "Bottom Right" => position.bottom_right
+    "Bottom Left"  => position.bottom_left
+    => position.top_right
+
+dashSize = switch dashboardSizeInput
+    "Tiny"   => size.tiny
+    "Small"  => size.small
+    "Normal" => size.normal
+    "Large"  => size.large
+    "Huge"   => size.huge
+    => size.small
+
+var table dash = table.new(dashPosition, 2, 4, bgcolor=color.new(color.black, 10), border_width=1, border_color=color.new(color.gray, 60), frame_color=color.new(color.gray, 60), frame_width=1)
+
+if showDashboardInput and barstate.islast
+    netDelta = 0.0
+    if rangeActive
+        for i = 0 to profileRowsInput - 1
+            netDelta += array.get(buyVol, i) - array.get(sellVol, i)
+
+    // Tightness: how much slack is left in the squeeze test before it would stop
+    // qualifying as a range -- a low reading means the range still has plenty of room to
+    // wander before rangeSensitivity would reject it, a high reading means it's already
+    // coiled about as tight as the detector allows.
+    tightness = rangeActive and atrVal > 0 ? math.max(0.0, 100.0 - (rangeWidth / (rangeSensitivity * atrVal) * 100.0)) : 0.0
+
+    table.cell(dash, 0, 0, "Range Profile", text_color=color.white, text_size=dashSize, bgcolor=color.new(color.gray, 70))
+    table.merge_cells(dash, 0, 0, 1, 0)
+
+    table.cell(dash, 0, 1, "State", text_color=color.gray, text_size=dashSize, text_halign=text.align_left)
+    table.cell(dash, 1, 1, rangeActive ? (netDelta >= 0 ? "Accumulation" : "Distribution") : "Scanning...", text_color=rangeActive ? (netDelta >= 0 ? upCss : dnCss) : color.gray, text_size=dashSize)
+
+    table.cell(dash, 0, 2, "Tightness", text_color=color.gray, text_size=dashSize, text_halign=text.align_left)
+    table.cell(dash, 1, 2, str.tostring(math.round(tightness)) + "%", text_color=tightness > 70 ? pocCss : color.white, text_size=dashSize)
+
+    table.cell(dash, 0, 3, "Net Delta", text_color=color.gray, text_size=dashSize, text_halign=text.align_left)
+    table.cell(dash, 1, 3, rangeActive ? str.tostring(netDelta, format.volume) : "N/A", text_color=netDelta >= 0 ? upCss : dnCss, text_size=dashSize)
