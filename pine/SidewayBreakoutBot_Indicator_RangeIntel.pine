@@ -4,25 +4,26 @@
 // over the last `rangeLength` bars is tighter than `rangeSensitivity` x ATR, its bounds
 // are locked and never change again until price closes outside them.
 //
-// This first pass only handles detection + the visual: two lines (top/bottom, no
-// middle, no box), each extended a fixed number of bars past the detection bar, with
-// a price label at the end of each. Only the MOST RECENT range's lines are ever kept
-// on the chart -- the previous range's lines/labels are deleted the instant a new one
-// is detected, instead of piling up forever. Breakout/entry/TP/SL logic isn't wired up
-// yet -- being built incrementally, step by step.
+// Visual matches the standard Indicator's own range box (a shaded box that recolors
+// once broken, and every past range stays on the chart -- nothing gets deleted), plus
+// two lines that stick out a fixed number of bars past the box's right edge with a
+// price label at each end. Breakout/entry/TP/SL logic isn't wired up yet -- being
+// built incrementally, step by step.
 //@version=6
-indicator("Sideway Breakout Bot [Indicator - Range Intel]", overlay=true, max_lines_count=500, max_labels_count=500)
+indicator("Sideway Breakout Bot [Indicator - Range Intel]", overlay=true, max_boxes_count=500, max_lines_count=500, max_labels_count=500)
 
 // ───────────────────────────── Inputs ─────────────────────────────
 grpRange = "Range Detector"
 rangeLength = input.int(20, "Detection Length", minval=5, group=grpRange)                   // lookback window used for both the highest-high/lowest-low span and its own ATR
 rangeSensitivity = input.float(4.0, "Range Sensitivity (x ATR)", minval=0.1, step=0.1, group=grpRange) // how tight the highest-high-to-lowest-low span must be (relative to ATR) to count as a range
 rangeAtrLen = input.int(200, "Range ATR Length", minval=1, group=grpRange)                   // ATR length used only for sizing the range test -- shortened from a longer default so it tracks the CURRENT volatility regime on 1-min charts
-lineExtendBars = input.int(30, "Extend Lines (bars)", minval=1, group=grpRange)              // how far past the detection bar the top/bottom lines stick out
-topCss = input.color(#089981, "Top Line", group=grpRange)
-botCss = input.color(#f23645, "Bottom Line", group=grpRange)
+lineExtendBars = input.int(30, "Extend Lines (bars)", minval=1, group=grpRange)              // how far past the box's right edge the top/bottom lines stick out
+upCss       = input.color(#089981, "Broken Upward", group=grpRange)                         // box/top-line color once price closes above the range
+dnCss       = input.color(#f23645, "Broken Downward", group=grpRange)                        // box/bottom-line color once price closes below the range
+unbrokenCss = input.color(#2157f3, "Unbroken", group=grpRange)                              // box color while still intact
 
 // ───────────────────────────── Range Detector (Donchian-width squeeze) ─────────────────────────────
+var box   bx          = na
 var line  topLine     = na
 var line  botLine     = na
 var label topLbl      = na
@@ -44,27 +45,32 @@ isConsolidating = rangeWidth < rangeSensitivity * rAtr
 if barstate.isconfirmed
     if isConsolidating and not rangeActive
         // A brand-new range -- lock its bounds now; they won't be revisited until it breaks.
-        // Clear out the previous range's lines/labels first so the chart only ever shows
-        // the current one, instead of every past range accumulating forever.
-        if not na(topLine)
-            line.delete(topLine)
-            line.delete(botLine)
-            label.delete(topLbl)
-            label.delete(botLbl)
-
+        // Nothing from the previous range is deleted -- old boxes/lines/labels stay on
+        // the chart as a permanent record, exactly like the standard Indicator's box.
         rangeActive := true
         rMax := hh
         rMin := ll
         leftBar = n - rangeLength + 1
         rightBar = n + lineExtendBars
 
-        topLine := line.new(leftBar, hh, rightBar, hh, color=topCss, width=2)
-        botLine := line.new(leftBar, ll, rightBar, ll, color=botCss, width=2)
+        bx := box.new(leftBar, hh, n, ll, na, bgcolor=color.new(unbrokenCss, 80))
 
-        topLbl := label.new(rightBar, hh, str.tostring(hh, format.mintick), style=label.style_label_left, color=color.new(topCss, 0), textcolor=color.white, size=size.small)
-        botLbl := label.new(rightBar, ll, str.tostring(ll, format.mintick), style=label.style_label_left, color=color.new(botCss, 0), textcolor=color.white, size=size.small)
+        topLine := line.new(n, hh, rightBar, hh, color=upCss, width=2)
+        botLine := line.new(n, ll, rightBar, ll, color=dnCss, width=2)
 
-    // A locked range is done, permanently, the instant price closes outside it --
-    // frees detection to find a brand-new range on a later bar.
-    if rangeActive and (close > rMax or close < rMin)
+        topLbl := label.new(rightBar, hh, str.tostring(hh, format.mintick), style=label.style_label_left, color=color.new(upCss, 0), textcolor=color.white, size=size.small)
+        botLbl := label.new(rightBar, ll, str.tostring(ll, format.mintick), style=label.style_label_left, color=color.new(dnCss, 0), textcolor=color.white, size=size.small)
+    else if rangeActive
+        // Still inside the locked range -- keep stretching the box rightward, just like
+        // the standard Indicator's box (the top/bottom lines stay fixed where they were
+        // drawn, already reaching lineExtendBars past the box's starting right edge).
+        bx.set_right(n)
+
+    // Recolor the box once price closes outside it, and free up detection for a new
+    // range -- a locked range that has broken is done, permanently.
+    if rangeActive and close > rMax
+        bx.set_bgcolor(color.new(upCss, 80))
+        rangeActive := false
+    else if rangeActive and close < rMin
+        bx.set_bgcolor(color.new(dnCss, 80))
         rangeActive := false
