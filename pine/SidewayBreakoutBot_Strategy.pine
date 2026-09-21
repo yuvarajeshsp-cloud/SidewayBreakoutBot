@@ -586,14 +586,19 @@ if numSetups > 0
         // ============================================================
         else if s.state == 5
             // Give up if price fully reverses back through the FAR side of the range
-            // before this ever fires (the impulse thesis failed), or if too much wall-
-            // clock time passes waiting for the session window to open.
+            // before this ever fires (the impulse thesis failed). There is deliberately
+            // no wall-clock timeout here -- unlike STATE 2 (which is genuinely waiting
+            // for a retracement that can go stale), the only thing STATE 5 ever waits
+            // on is the session window opening (see `inSession` below): a fixed timeout
+            // doesn't distinguish "still waiting for the session to open" from "thesis
+            // went stale" and previously dropped a perfectly good impulse breakout hours
+            // before the next session even started, purely because retraceTimeoutMin
+            // (built for a different wait) ran out first. An un-invalidated impulse now
+            // just waits patiently for the session to open and enters the instant it does.
             invalidated5 = s.dir == 1 ? low < s.lockedLow : high > s.lockedHigh
-            minutesSinceBreakout5 = (time - s.breakoutTime) / 60000.0
 
-            if invalidated5 or minutesSinceBreakout5 > retraceTimeoutMin
-                s.stageLog := s.stageLog + "\nState 5: " + (invalidated5 ? "Price reversed back through the far side of the range before the impulse entry could fire (thesis invalidated)." :
-                     "Retracement timeout (" + str.tostring(retraceTimeoutMin) + " min) exceeded while waiting" + (not inSession ? " -- still outside the trading session window (" + sessionWindow + ") the whole time." : ".")) + " -> setup dropped."
+            if invalidated5
+                s.stageLog := s.stageLog + "\nState 5: Price reversed back through the far side of the range before the impulse entry could fire (thesis invalidated) -> setup dropped."
                 label.new(bar_index, high + iLblOffset, "i", style=label.style_label_down, color=color.new(color.gray, 0), textcolor=color.white, size=size.small, tooltip=s.stageLog)
                 removeThis := true
             else if inSession
