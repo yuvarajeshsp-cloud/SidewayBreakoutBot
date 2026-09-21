@@ -122,7 +122,15 @@ if rangeEvent
     // shrink it), a trend with several such pauses would otherwise accumulate one
     // ever-widening "range" spanning the whole move, which a real breakout then
     // essentially never clears.
-    if n[rangeLength] <= bx.get_right() and (ma + rAtr) >= bx.get_bottom() and (ma - rAtr) <= bx.get_top()
+    //
+    // rOs == 0 (still unbroken) is also required -- without it, a box that ALREADY
+    // broke out could still be merged into by a later pullback that happens to
+    // pause nearby, repainting it back to unbrokenCss and silently absorbing what
+    // should be a genuinely new consolidation. That new consolidation would then
+    // never arm its own setup (freshRange only fires in the "else" branch below),
+    // so whatever setup is still watching stays tied to the ORIGINAL, already-
+    // broken range instead of the new one the box now visually shows.
+    if rOs == 0 and n[rangeLength] <= bx.get_right() and (ma + rAtr) >= bx.get_bottom() and (ma - rAtr) <= bx.get_top()
         rMax := math.max(ma + rAtr, bx.get_top())
         rMin := math.min(ma - rAtr, bx.get_bottom())
         bx.set_top(rMax)
