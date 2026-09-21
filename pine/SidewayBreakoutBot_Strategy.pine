@@ -18,7 +18,6 @@ maxBarsWatch = input.int(50, "Max Bars to Wait for Breakout", minval=1, group=gr
 allowStackedEntries = input.bool(true, "Allow Stacked Entries", group=grpRange)             // false = force exactly one setup at a time, overriding the count below
 maxConcurrentSetups = input.int(3, "Max Concurrent Setups", minval=1, maxval=10, group=grpRange) // cap on how many setups (watching or in-trade) can run at once when stacking is allowed
 maxSlFlips = input.int(1, "Max SL Flips per Range", minval=0, maxval=5, group=grpRange)     // after a stop-loss, how many times the SAME range may be re-watched for the opposite breakout (0 = never)
-retestGuardBars = input.int(200, "Retest Guard Window (bars, 0 = never expires)", minval=0, group=grpRange) // how long a completed entry keeps blocking a NEW same-direction setup at an overlapping price -- without an expiry, a symbol that later revisits a similar price band (common on a ranging instrument) can get permanently blocked from ever entering there again, even on a completely unrelated, much-later setup
 
 grpBreak = "Breakout"
 atrLength         = input.int(20, "ATR Length (SL/Filters)", minval=1, group=grpBreak)      // ATR used for the SL buffer and the body-size filter (not the range band above) -- lengthened from 14 for 1-min charts so a single noisy/spiky bar doesn't swing it as much
@@ -29,7 +28,6 @@ useFakeoutFilter  = input.bool(true, "Require Confirmation Candle After Breakout
 grpImpulse = "Impulse Breakout"
 enableImpulseEntry = input.bool(true, "Enable Impulse Breakout Entry", group=grpImpulse)     // skip the fakeout-confirmation/retracement wait entirely when the breakout candle's body already closes far enough beyond the range, and just enter on the very next candle instead
 impulseThresholdPct = input.float(40.0, "Impulse Threshold (% of range beyond boundary)", minval=0, step=1, group=grpImpulse) // how far (as a % of the range's own height) the breakout candle's body must close beyond the boundary to count as an impulse move -- raised from 25 for 1-min, where ordinary noise spikes can otherwise overshoot a tight range by 25% without real conviction behind the move
-maxImpulseDriftPct = input.float(100.0, "Max Impulse Entry Drift (% of range height, 0 = no cap)", minval=0, step=10, group=grpImpulse) // skip the impulse entry if price has drifted this far (as a % of the range's own height) beyond the breakout candle's own close by the time the entry candle actually arrives -- STATE 5 has no timeout and patiently waits for the session window to open if the breakout happened outside it, so without this cap a long overnight/off-session wait could let price drift far away first, producing a much wider (and much less validated) risk distance than the original impulse thesis ever measured
 
 grpZone = "Retracement Zone"
 zoneScanMaxBars  = input.int(15, "Zone Scan Lookback (bars)", minval=3, group=grpZone)       // how far back (from the breakout) to search for a Fair Value Gap
@@ -116,22 +114,7 @@ freshRange = false
 if rangeEvent
     // If the new range overlaps the box still being drawn from a previous range,
     // just stretch that same box/line to cover both instead of starting a new one.
-    // Overlap requires PRICE too, not just time being adjacent to bx.get_right() --
-    // time-adjacency alone lets an unrelated brief pause partway through a real
-    // trend get merged into the old box just because it follows closely after it.
-    // Since this merge only ever grows the box (math.max/math.min below never
-    // shrink it), a trend with several such pauses would otherwise accumulate one
-    // ever-widening "range" spanning the whole move, which a real breakout then
-    // essentially never clears.
-    //
-    // rOs == 0 (still unbroken) is also required -- without it, a box that ALREADY
-    // broke out could still be merged into by a later pullback that happens to
-    // pause nearby, repainting it back to unbrokenCss and silently absorbing what
-    // should be a genuinely new consolidation. That new consolidation would then
-    // never arm its own setup (freshRange only fires in the "else" branch below),
-    // so whatever setup is still watching stays tied to the ORIGINAL, already-
-    // broken range instead of the new one the box now visually shows.
-    if rOs == 0 and n[rangeLength] <= bx.get_right() and (ma + rAtr) >= bx.get_bottom() and (ma - rAtr) <= bx.get_top()
+    if n[rangeLength] <= bx.get_right()
         rMax := math.max(ma + rAtr, bx.get_top())
         rMin := math.min(ma - rAtr, bx.get_bottom())
         bx.set_top(rMax)
@@ -141,12 +124,8 @@ if rangeEvent
         lvl.set_y1(avg)
         lvl.set_xy2(n, avg)
         lvl.set_color(unbrokenCss)
-    else if na(bx) or (ma - rAtr) > bx.get_top() or (ma + rAtr) < bx.get_bottom()
-        // Genuinely new AND doesn't overlap the previous box in price at all -- draw
-        // a fresh box/midline. If it DOES overlap the previous box's price but didn't
-        // qualify for the merge above (that box already broke, or this isn't time-
-        // adjacent to it), it's dropped below instead: a new range overlapping a
-        // previous one -- broken or not -- is never drawn or armed.
+    else
+        // Otherwise this is a genuinely new range -- draw a fresh box/midline.
         rMax := ma + rAtr
         rMin := ma - rAtr
         bx := box.new(n[rangeLength], ma + rAtr, n, ma - rAtr, na, bgcolor=color.new(unbrokenCss, 80))
@@ -154,13 +133,8 @@ if rangeEvent
         detect_css := color.new(color.gray, 80)
         rOs := 0
         freshRange := true
-else if rOs == 0 and rCount == 0
+else if rCount == 0
     // Range is still intact (no new event) -- just keep extending the box rightward.
-    // rOs == 0 is required here too -- without it, once an overlapping-but-non-
-    // mergeable new range starts getting dropped (see above) instead of replacing
-    // `bx` with a fresh box, this line kept stretching the SAME already-broken box
-    // forever, every time price happened to go quiet again anywhere, regardless of
-    // whether it had anything to do with that old, resolved range.
     bx.set_right(n)
     lvl.set_x2(n)
 
@@ -228,28 +202,22 @@ f_findZone(d, lockBarArg, lockedHighArg, lockedLowArg) =>
 
     [fH, fL]
 
-// Record of every (range, direction) pair that has already produced an entry, so a range
-// that gets retested and re-consolidates later can't fire a second same-direction entry
-// -- an SL-flip is still allowed, since it watches for the OPPOSITE direction and so
-// never matches an entry already recorded here. Bounded by retestGuardBars (below) --
-// without an expiry, this grows forever and a ranging instrument that later happens to
-// revisit a similar price band (common, e.g. gold oscillating back through an old level
-// hundreds/thousands of bars later) would get permanently blocked from ever entering
-// there again, on a setup with no real relationship to the original trade.
+// Persistent (never cleared) record of every (range, direction) pair that has already
+// produced an entry, so a range that gets retested and re-consolidates later can't fire
+// a second same-direction entry -- an SL-flip is still allowed, since it watches for the
+// OPPOSITE direction and so never matches an entry already recorded here.
 var array<float> tradedHigh = array.new<float>()
 var array<float> tradedLow  = array.new<float>()
 var array<int>   tradedDir  = array.new<int>()
-var array<int>   tradedBar  = array.new<int>()   // bar_index each entry above was recorded at
 
-// True if a same-direction entry already happened, RECENTLY ENOUGH (within
-// retestGuardBars, 0 = no expiry), on a range that overlaps this one at all (any shared
-// price counts as "the same zone").
+// True if a same-direction entry already happened on a range that overlaps this one at
+// all (any shared price counts as "the same zone").
 f_zoneAlreadyTraded(d, hi, lo) =>
     found = false
     n2 = array.size(tradedDir)
     if n2 > 0
         for i = 0 to n2 - 1
-            if not found and array.get(tradedDir, i) == d and hi >= array.get(tradedLow, i) and lo <= array.get(tradedHigh, i) and (retestGuardBars <= 0 or bar_index - array.get(tradedBar, i) <= retestGuardBars)
+            if not found and array.get(tradedDir, i) == d and hi >= array.get(tradedLow, i) and lo <= array.get(tradedHigh, i)
                 found := true
     found
 
@@ -277,7 +245,6 @@ type Setup
     bool   isImpulse     // true if this setup entered via the impulse-breakout path (skipped the fakeout/retracement wait)
     float  impulsePct    // % of the range's height the breakout candle's body closed beyond the boundary (only meaningful when isImpulse)
     float  preBreakoutLevel  // high/low of the candle immediately before the breakout candle -- one of two impulse-entry SL candidates (see STATE 5)
-    float  breakoutClose     // close of the breakout candle itself -- reference point for the max-drift cap in STATE 5 (price may keep moving for a long time while an impulse patiently waits for the session to open)
     float  zoneHigh      // top of the retracement target zone (FVG or range fallback)
     float  zoneLow       // bottom of the retracement target zone
     float  zoneMid       // midpoint of the zone -- computed but no longer used for confirmation (that now uses zoneHigh/zoneLow directly, see STATE 2)
@@ -377,7 +344,7 @@ if numSetups > 0
                     // OPPOSITE direction, starting fresh from state 1.
                     if s.flipsUsed < maxSlFlips
                         array.push(setups, Setup.new(state=1, lockedHigh=s.lockedHigh, lockedLow=s.lockedLow, lockBar=bar_index, dir=0, breakoutTime=na, breakoutBar=na,
-                             isImpulse=false, impulsePct=na, preBreakoutLevel=na, breakoutClose=na,
+                             isImpulse=false, impulsePct=na, preBreakoutLevel=na,
                              zoneHigh=na, zoneLow=na, zoneMid=na, touchedZone=false, slPrice=na, entryPrice=na,
                              tp1Price=na, tp2Price=na, tp3Price=na, tp1Filled=false, tp2Filled=false, qtyAtEntry=na, entryId=na,
                              zoneBox=na, riskBands=array.new<box>(), rewardBands=array.new<box>(),
@@ -540,7 +507,6 @@ if numSetups > 0
                     // candle right before this breakout candle -- the base of the
                     // impulse move.
                     s.preBreakoutLevel := s.dir == 1 ? low[1] : high[1]
-                    s.breakoutClose := close
                     s.state := 5
                     s.stageLog := s.stageLog + "\nState 1: " + (bullBreak ? "Bullish" : "Bearish") + " full-body breakout at bar " + str.tostring(bar_index) + " (close " + str.tostring(close, format.mintick) + "), body " + str.tostring(s.impulsePct, "#.#") + "% beyond range -> impulse detected, entering next candle (State 5)."
                     alert("Sideway Breakout Bot: " + (bullBreak ? "bullish" : "bearish") + " impulse breakout (" + str.tostring(s.impulsePct, "#.#") + "% beyond range), entering next candle", alert.freq_once_per_bar_close)
@@ -613,19 +579,14 @@ if numSetups > 0
         // ============================================================
         else if s.state == 5
             // Give up if price fully reverses back through the FAR side of the range
-            // before this ever fires (the impulse thesis failed). There is deliberately
-            // no wall-clock timeout here -- unlike STATE 2 (which is genuinely waiting
-            // for a retracement that can go stale), the only thing STATE 5 ever waits
-            // on is the session window opening (see `inSession` below): a fixed timeout
-            // doesn't distinguish "still waiting for the session to open" from "thesis
-            // went stale" and previously dropped a perfectly good impulse breakout hours
-            // before the next session even started, purely because retraceTimeoutMin
-            // (built for a different wait) ran out first. An un-invalidated impulse now
-            // just waits patiently for the session to open and enters the instant it does.
+            // before this ever fires (the impulse thesis failed), or if too much wall-
+            // clock time passes waiting for the session window to open.
             invalidated5 = s.dir == 1 ? low < s.lockedLow : high > s.lockedHigh
+            minutesSinceBreakout5 = (time - s.breakoutTime) / 60000.0
 
-            if invalidated5
-                s.stageLog := s.stageLog + "\nState 5: Price reversed back through the far side of the range before the impulse entry could fire (thesis invalidated) -> setup dropped."
+            if invalidated5 or minutesSinceBreakout5 > retraceTimeoutMin
+                s.stageLog := s.stageLog + "\nState 5: " + (invalidated5 ? "Price reversed back through the far side of the range before the impulse entry could fire (thesis invalidated)." :
+                     "Retracement timeout (" + str.tostring(retraceTimeoutMin) + " min) exceeded while waiting" + (not inSession ? " -- still outside the trading session window (" + sessionWindow + ") the whole time." : ".")) + " -> setup dropped."
                 label.new(bar_index, high + iLblOffset, "i", style=label.style_label_down, color=color.new(color.gray, 0), textcolor=color.white, size=size.small, tooltip=s.stageLog)
                 removeThis := true
             else if inSession
@@ -645,26 +606,14 @@ if numSetups > 0
                 qtyToTrade = r > 0 ? riskAmount / (r * syminfo.pointvalue) : 0.0
                 slTooWide = maxSlPips > 0 and r > maxSlPips * pipSize
                 zoneAlreadyTraded = f_zoneAlreadyTraded(s.dir, s.lockedHigh, s.lockedLow)
-                // STATE 5 has no timeout and patiently waits for the session to open if
-                // the breakout happened outside it -- price can keep moving the whole
-                // time. driftTooFar catches the case where it moved so far that this
-                // isn't really "entering on the next candle" anymore in any meaningful
-                // sense, just a much later, much wider-risk entry riding on a stale SL
-                // reference (the pre-breakout level) that was never validated against
-                // this much subsequent movement.
-                rangeHeight5 = s.lockedHigh - s.lockedLow
-                driftFromBreakout = math.abs(s.entryPrice - s.breakoutClose)
-                driftTooFar = maxImpulseDriftPct > 0 and rangeHeight5 > 0 and driftFromBreakout > maxImpulseDriftPct / 100.0 * rangeHeight5
                 skipReason5 = qtyToTrade <= 0 ? "zero/invalid risk distance (entry landed exactly on the stop level)" :
                      slTooWide ? ("SL distance (" + str.tostring(r / pipSize, "#.#") + " pips) exceeds Max SL Distance (" + str.tostring(maxSlPips, "#.#") + " pips)") :
-                     driftTooFar ? ("price drifted " + str.tostring(driftFromBreakout, format.mintick) + " beyond the breakout candle's close (" + str.tostring(s.breakoutClose, format.mintick) + ") over " + str.tostring(bar_index - s.breakoutBar) + " bars waiting for session -- " + str.tostring(driftFromBreakout / rangeHeight5 * 100, "#.#") + "% of the range's own height, over Max Impulse Entry Drift (" + str.tostring(maxImpulseDriftPct, "#.#") + "%)") :
                      "this exact range+direction already produced an entry before (retest-and-continue guard)"
 
-                if qtyToTrade > 0 and not slTooWide and not zoneAlreadyTraded and not driftTooFar
+                if qtyToTrade > 0 and not slTooWide and not zoneAlreadyTraded
                     array.push(tradedHigh, s.lockedHigh)
                     array.push(tradedLow, s.lockedLow)
                     array.push(tradedDir, s.dir)
-                    array.push(tradedBar, bar_index)
                     setupCounter += 1
                     s.entryId := (s.dir == 1 ? "Long_" : "Short_") + str.tostring(setupCounter)
                     s.qtyAtEntry := qtyToTrade
@@ -803,7 +752,6 @@ if numSetups > 0
                     array.push(tradedHigh, s.lockedHigh)
                     array.push(tradedLow, s.lockedLow)
                     array.push(tradedDir, s.dir)
-                    array.push(tradedBar, bar_index)
                     // Unique id per setup (e.g. "Long_7") so multiple concurrent
                     // positions -- even in the same direction -- never collide.
                     setupCounter += 1
@@ -920,7 +868,7 @@ if numSetups > 0
 canArmNewSetup = allowStackedEntries ? array.size(setups) < maxConcurrentSetups : array.size(setups) == 0
 if freshRange and canArmNewSetup
     array.push(setups, Setup.new(state=1, lockedHigh=rMax, lockedLow=rMin, lockBar=n, dir=0, breakoutTime=na, breakoutBar=na,
-         isImpulse=false, impulsePct=na, preBreakoutLevel=na, breakoutClose=na,
+         isImpulse=false, impulsePct=na, preBreakoutLevel=na,
          zoneHigh=na, zoneLow=na, zoneMid=na, touchedZone=false, slPrice=na, entryPrice=na,
          tp1Price=na, tp2Price=na, tp3Price=na, tp1Filled=false, tp2Filled=false, qtyAtEntry=na, entryId=na,
          zoneBox=na, riskBands=array.new<box>(), rewardBands=array.new<box>(),
