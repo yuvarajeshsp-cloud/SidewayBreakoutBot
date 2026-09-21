@@ -29,6 +29,7 @@ useFakeoutFilter  = input.bool(true, "Require Confirmation Candle After Breakout
 grpImpulse = "Impulse Breakout"
 enableImpulseEntry = input.bool(true, "Enable Impulse Breakout Entry", group=grpImpulse)     // skip the fakeout-confirmation/retracement wait entirely when the breakout candle's body already closes far enough beyond the range, and just enter on the very next candle instead
 impulseThresholdPct = input.float(40.0, "Impulse Threshold (% of range beyond boundary)", minval=0, step=1, group=grpImpulse) // how far (as a % of the range's own height) the breakout candle's body must close beyond the boundary to count as an impulse move -- raised from 25 for 1-min, where ordinary noise spikes can otherwise overshoot a tight range by 25% without real conviction behind the move
+maxImpulseDriftPct = input.float(100.0, "Max Impulse Entry Drift (% of range height, 0 = no cap)", minval=0, step=10, group=grpImpulse) // skip the impulse entry if price has drifted this far (as a % of the range's own height) beyond the breakout candle's own close by the time the entry candle actually arrives -- STATE 5 has no timeout and patiently waits for the session window to open if the breakout happened outside it, so without this cap a long overnight/off-session wait could let price drift far away first, producing a much wider (and much less validated) risk distance than the original impulse thesis ever measured
 
 grpZone = "Retracement Zone"
 zoneScanMaxBars  = input.int(15, "Zone Scan Lookback (bars)", minval=3, group=grpZone)       // how far back (from the breakout) to search for a Fair Value Gap
@@ -271,6 +272,7 @@ type Setup
     bool   isImpulse     // true if this setup entered via the impulse-breakout path (skipped the fakeout/retracement wait)
     float  impulsePct    // % of the range's height the breakout candle's body closed beyond the boundary (only meaningful when isImpulse)
     float  preBreakoutLevel  // high/low of the candle immediately before the breakout candle -- one of two impulse-entry SL candidates (see STATE 5)
+    float  breakoutClose     // close of the breakout candle itself -- reference point for the max-drift cap in STATE 5 (price may keep moving for a long time while an impulse patiently waits for the session to open)
     float  zoneHigh      // top of the retracement target zone (FVG or range fallback)
     float  zoneLow       // bottom of the retracement target zone
     float  zoneMid       // midpoint of the zone -- computed but no longer used for confirmation (that now uses zoneHigh/zoneLow directly, see STATE 2)
@@ -370,7 +372,7 @@ if numSetups > 0
                     // OPPOSITE direction, starting fresh from state 1.
                     if s.flipsUsed < maxSlFlips
                         array.push(setups, Setup.new(state=1, lockedHigh=s.lockedHigh, lockedLow=s.lockedLow, lockBar=bar_index, dir=0, breakoutTime=na, breakoutBar=na,
-                             isImpulse=false, impulsePct=na, preBreakoutLevel=na,
+                             isImpulse=false, impulsePct=na, preBreakoutLevel=na, breakoutClose=na,
                              zoneHigh=na, zoneLow=na, zoneMid=na, touchedZone=false, slPrice=na, entryPrice=na,
                              tp1Price=na, tp2Price=na, tp3Price=na, tp1Filled=false, tp2Filled=false, qtyAtEntry=na, entryId=na,
                              zoneBox=na, riskBands=array.new<box>(), rewardBands=array.new<box>(),
@@ -533,6 +535,7 @@ if numSetups > 0
                     // candle right before this breakout candle -- the base of the
                     // impulse move.
                     s.preBreakoutLevel := s.dir == 1 ? low[1] : high[1]
+                    s.breakoutClose := close
                     s.state := 5
                     s.stageLog := s.stageLog + "\nState 1: " + (bullBreak ? "Bullish" : "Bearish") + " full-body breakout at bar " + str.tostring(bar_index) + " (close " + str.tostring(close, format.mintick) + "), body " + str.tostring(s.impulsePct, "#.#") + "% beyond range -> impulse detected, entering next candle (State 5)."
                     alert("Sideway Breakout Bot: " + (bullBreak ? "bullish" : "bearish") + " impulse breakout (" + str.tostring(s.impulsePct, "#.#") + "% beyond range), entering next candle", alert.freq_once_per_bar_close)
@@ -637,11 +640,22 @@ if numSetups > 0
                 qtyToTrade = r > 0 ? riskAmount / (r * syminfo.pointvalue) : 0.0
                 slTooWide = maxSlPips > 0 and r > maxSlPips * pipSize
                 zoneAlreadyTraded = f_zoneAlreadyTraded(s.dir, s.lockedHigh, s.lockedLow)
+                // STATE 5 has no timeout and patiently waits for the session to open if
+                // the breakout happened outside it -- price can keep moving the whole
+                // time. driftTooFar catches the case where it moved so far that this
+                // isn't really "entering on the next candle" anymore in any meaningful
+                // sense, just a much later, much wider-risk entry riding on a stale SL
+                // reference (the pre-breakout level) that was never validated against
+                // this much subsequent movement.
+                rangeHeight5 = s.lockedHigh - s.lockedLow
+                driftFromBreakout = math.abs(s.entryPrice - s.breakoutClose)
+                driftTooFar = maxImpulseDriftPct > 0 and rangeHeight5 > 0 and driftFromBreakout > maxImpulseDriftPct / 100.0 * rangeHeight5
                 skipReason5 = qtyToTrade <= 0 ? "zero/invalid risk distance (entry landed exactly on the stop level)" :
                      slTooWide ? ("SL distance (" + str.tostring(r / pipSize, "#.#") + " pips) exceeds Max SL Distance (" + str.tostring(maxSlPips, "#.#") + " pips)") :
+                     driftTooFar ? ("price drifted " + str.tostring(driftFromBreakout, format.mintick) + " beyond the breakout candle's close (" + str.tostring(s.breakoutClose, format.mintick) + ") over " + str.tostring(bar_index - s.breakoutBar) + " bars waiting for session -- " + str.tostring(driftFromBreakout / rangeHeight5 * 100, "#.#") + "% of the range's own height, over Max Impulse Entry Drift (" + str.tostring(maxImpulseDriftPct, "#.#") + "%)") :
                      "this exact range+direction already produced an entry before (retest-and-continue guard)"
 
-                if qtyToTrade > 0 and not slTooWide and not zoneAlreadyTraded
+                if qtyToTrade > 0 and not slTooWide and not zoneAlreadyTraded and not driftTooFar
                     array.push(tradedHigh, s.lockedHigh)
                     array.push(tradedLow, s.lockedLow)
                     array.push(tradedDir, s.dir)
@@ -695,7 +709,7 @@ if numSetups > 0
                     tpList5 = "TP1 " + str.tostring(s.tp1Price, format.mintick) +
                          (numTPs >= 2 ? ", TP2 " + str.tostring(s.tp2Price, format.mintick) : "") +
                          (numTPs >= 3 ? ", TP3 " + str.tostring(s.tp3Price, format.mintick) : "")
-                    s.stageLog := s.stageLog + "\nState 5: Entered " + (s.dir == 1 ? "LONG" : "SHORT") + " at " + str.tostring(s.entryPrice, format.mintick) + " (this candle's open), SL " + str.tostring(s.slPrice, format.mintick) + " (pre-breakout candle " + (s.dir == 1 ? "low" : "high") + " +/- buffer), " + tpList5 + ", risk 1R = " + str.tostring(r, format.mintick) + ", qty " + str.tostring(qtyToTrade, "#.####") + " (" + str.tostring(riskPercent) + "% risk) -> in trade (State 3)." + (s.flipsUsed > 0 ? " [flip #" + str.tostring(s.flipsUsed) + " after a prior SL]" : "")
+                    s.stageLog := s.stageLog + "\nState 5: Entered " + (s.dir == 1 ? "LONG" : "SHORT") + " at " + str.tostring(s.entryPrice, format.mintick) + " (this candle's open, " + str.tostring(bar_index - s.breakoutBar) + " bar(s) after the breakout), SL " + str.tostring(s.slPrice, format.mintick) + " (pre-breakout candle " + (s.dir == 1 ? "low" : "high") + " +/- buffer), " + tpList5 + ", risk 1R = " + str.tostring(r, format.mintick) + ", qty " + str.tostring(qtyToTrade, "#.####") + " (" + str.tostring(riskPercent) + "% risk) -> in trade (State 3)." + (s.flipsUsed > 0 ? " [flip #" + str.tostring(s.flipsUsed) + " after a prior SL]" : "")
                     s.entryInfoLbl := label.new(bar_index, high + iLblOffset, "i", style=label.style_label_down, color=color.new(color.blue, 0), textcolor=color.white, size=size.small, tooltip=s.stageLog)
                     alert("Sideway Breakout Bot: " + (s.dir == 1 ? "LONG" : "SHORT") + " entry triggered", alert.freq_once_per_bar_close)
                 else
@@ -901,7 +915,7 @@ if numSetups > 0
 canArmNewSetup = allowStackedEntries ? array.size(setups) < maxConcurrentSetups : array.size(setups) == 0
 if freshRange and canArmNewSetup
     array.push(setups, Setup.new(state=1, lockedHigh=rMax, lockedLow=rMin, lockBar=n, dir=0, breakoutTime=na, breakoutBar=na,
-         isImpulse=false, impulsePct=na, preBreakoutLevel=na,
+         isImpulse=false, impulsePct=na, preBreakoutLevel=na, breakoutClose=na,
          zoneHigh=na, zoneLow=na, zoneMid=na, touchedZone=false, slPrice=na, entryPrice=na,
          tp1Price=na, tp2Price=na, tp3Price=na, tp1Filled=false, tp2Filled=false, qtyAtEntry=na, entryId=na,
          zoneBox=na, riskBands=array.new<box>(), rewardBands=array.new<box>(),
