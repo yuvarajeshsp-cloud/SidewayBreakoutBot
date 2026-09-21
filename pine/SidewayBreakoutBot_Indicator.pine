@@ -250,7 +250,6 @@ type Setup
     float preBreakoutLevel  // high/low of the candle immediately before the breakout candle -- one of two impulse-entry SL candidates (see STATE 5)
     float zoneHigh      // top of the retracement target zone (FVG or range fallback)
     float zoneLow       // bottom of the retracement target zone
-    float zoneMid       // midpoint of the zone -- computed but no longer used for confirmation (that now uses zoneHigh/zoneLow directly, see STATE 2)
     bool  touchedZone   // true once price has traded into the zone at least once
     box   zoneBox       // orange box marking the retracement zone while waiting for entry
     float slPrice       // stop-loss price for the (simulated) trade
@@ -286,7 +285,6 @@ type Setup
 
 var array<Setup> setups = array.new<Setup>()
 
-bool entrySignal  = false
 bool exitSignal   = false
 bool isLongEntry  = false   // set true on any bar where a long entry fires (drives the "L" marker)
 bool isShortEntry = false   // set true on any bar where a short entry fires (drives the "S" marker)
@@ -417,7 +415,7 @@ if numSetups > 0
                 if s.flipsUsed < maxSlFlips
                     array.push(setups, Setup.new(state=1, lockedHigh=s.lockedHigh, lockedLow=s.lockedLow, lockBar=bar_index, dir=0, breakoutTime=na, breakoutBar=na,
                          isImpulse=false, impulsePct=na, preBreakoutLevel=na,
-                         zoneHigh=na, zoneLow=na, zoneMid=na, touchedZone=false, zoneBox=na, slPrice=na, entryPrice=na,
+                         zoneHigh=na, zoneLow=na, touchedZone=false, zoneBox=na, slPrice=na, entryPrice=na,
                          tp1Price=na, tp2Price=na, tp3Price=na, tp1Hit=false, tp2Hit=false, tp3Hit=false,
                          riskBands=array.new<box>(), rewardBands=array.new<box>(),
                          entryLine=na, slLine=na, tp1Line=na, tp2Line=na, tp3Line=na,
@@ -501,7 +499,6 @@ if numSetups > 0
                         [zH, zL] = f_findZone(s.dir, s.lockBar, s.lockedHigh, s.lockedLow)
                         s.zoneHigh := zH
                         s.zoneLow := zL
-                        s.zoneMid := (zH + zL) / 2
                         s.touchedZone := false
                         s.state := 2
                         if showZone
@@ -532,7 +529,6 @@ if numSetups > 0
                     [zH, zL] = f_findZone(s.dir, s.lockBar, s.lockedHigh, s.lockedLow)
                     s.zoneHigh := zH
                     s.zoneLow := zL
-                    s.zoneMid := (zH + zL) / 2
                     // The scanned leg spans the original breakout candle through this
                     // confirmation candle (breakoutBar, NOT lockBar -- lockBar predates the
                     // entire state-1 watching period, during which price was still inside
@@ -605,7 +601,6 @@ if numSetups > 0
 
                     s.state := 3
                     s.entryBar := bar_index
-                    entrySignal := true
                     if s.dir == 1
                         isLongEntry := true
                     else
@@ -743,7 +738,6 @@ if numSetups > 0
 
                         s.state := 3
                         s.entryBar := bar_index
-                        entrySignal := true
                         if s.dir == 1
                             isLongEntry := true
                         else
@@ -845,7 +839,7 @@ canArmNewSetup = allowStackedEntries ? array.size(setups) < maxConcurrentSetups 
 if freshRange and canArmNewSetup and barstate.isconfirmed
     array.push(setups, Setup.new(state=1, lockedHigh=rMax, lockedLow=rMin, lockBar=n, dir=0, breakoutTime=na, breakoutBar=na,
          isImpulse=false, impulsePct=na, preBreakoutLevel=na,
-         zoneHigh=na, zoneLow=na, zoneMid=na, touchedZone=false, zoneBox=na, slPrice=na, entryPrice=na,
+         zoneHigh=na, zoneLow=na, touchedZone=false, zoneBox=na, slPrice=na, entryPrice=na,
          tp1Price=na, tp2Price=na, tp3Price=na, tp1Hit=false, tp2Hit=false, tp3Hit=false,
          riskBands=array.new<box>(), rewardBands=array.new<box>(),
          entryLine=na, slLine=na, tp1Line=na, tp2Line=na, tp3Line=na,

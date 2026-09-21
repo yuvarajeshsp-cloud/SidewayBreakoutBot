@@ -247,7 +247,6 @@ type Setup
     float  preBreakoutLevel  // high/low of the candle immediately before the breakout candle -- one of two impulse-entry SL candidates (see STATE 5)
     float  zoneHigh      // top of the retracement target zone (FVG or range fallback)
     float  zoneLow       // bottom of the retracement target zone
-    float  zoneMid       // midpoint of the zone -- computed but no longer used for confirmation (that now uses zoneHigh/zoneLow directly, see STATE 2)
     bool   touchedZone   // true once price has traded into the zone at least once
     float  slPrice       // stop-loss price for the trade
     float  entryPrice    // entry price for the trade
@@ -345,7 +344,7 @@ if numSetups > 0
                     if s.flipsUsed < maxSlFlips
                         array.push(setups, Setup.new(state=1, lockedHigh=s.lockedHigh, lockedLow=s.lockedLow, lockBar=bar_index, dir=0, breakoutTime=na, breakoutBar=na,
                              isImpulse=false, impulsePct=na, preBreakoutLevel=na,
-                             zoneHigh=na, zoneLow=na, zoneMid=na, touchedZone=false, slPrice=na, entryPrice=na,
+                             zoneHigh=na, zoneLow=na, touchedZone=false, slPrice=na, entryPrice=na,
                              tp1Price=na, tp2Price=na, tp3Price=na, tp1Filled=false, tp2Filled=false, qtyAtEntry=na, entryId=na,
                              zoneBox=na, riskBands=array.new<box>(), rewardBands=array.new<box>(),
                              entryLine=na, slLine=na, tp1Line=na, tp2Line=na, tp3Line=na,
@@ -520,7 +519,6 @@ if numSetups > 0
                     [zH, zL] = f_findZone(s.dir, s.lockBar, s.lockedHigh, s.lockedLow)
                     s.zoneHigh := zH
                     s.zoneLow := zL
-                    s.zoneMid := (zH + zL) / 2
                     s.touchedZone := false
                     s.state := 2
                     if showZone
@@ -546,7 +544,6 @@ if numSetups > 0
                 [zH, zL] = f_findZone(s.dir, s.lockBar, s.lockedHigh, s.lockedLow)
                 s.zoneHigh := zH
                 s.zoneLow := zL
-                s.zoneMid := (zH + zL) / 2
                 // The scanned leg spans the original breakout candle through this
                 // confirmation candle (breakoutBar, NOT lockBar -- lockBar predates the
                 // entire state-1 watching period, during which price was still inside
@@ -869,7 +866,7 @@ canArmNewSetup = allowStackedEntries ? array.size(setups) < maxConcurrentSetups 
 if freshRange and canArmNewSetup
     array.push(setups, Setup.new(state=1, lockedHigh=rMax, lockedLow=rMin, lockBar=n, dir=0, breakoutTime=na, breakoutBar=na,
          isImpulse=false, impulsePct=na, preBreakoutLevel=na,
-         zoneHigh=na, zoneLow=na, zoneMid=na, touchedZone=false, slPrice=na, entryPrice=na,
+         zoneHigh=na, zoneLow=na, touchedZone=false, slPrice=na, entryPrice=na,
          tp1Price=na, tp2Price=na, tp3Price=na, tp1Filled=false, tp2Filled=false, qtyAtEntry=na, entryId=na,
          zoneBox=na, riskBands=array.new<box>(), rewardBands=array.new<box>(),
          entryLine=na, slLine=na, tp1Line=na, tp2Line=na, tp3Line=na,
