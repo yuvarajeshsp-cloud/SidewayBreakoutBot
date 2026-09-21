@@ -280,6 +280,7 @@ type Setup
     int   flipsUsed     // how many times this range's lineage has already flipped direction after an SL
     int   entryBar      // bar index of entry (used for the stagnation timeout)
     bool  leftEntry     // true once price has ever moved in the trade's favor past entryPrice
+    bool  confirmedOutOfSession  // true once a valid STATE 2 confirmation candle occurred while outside the session window -- feeds the no-entry tooltip if this setup later times out/invalidates without ever entering
 
 var array<Setup> setups = array.new<Setup>()
 
@@ -414,7 +415,7 @@ if numSetups > 0
                          riskBands=array.new<box>(), rewardBands=array.new<box>(),
                          entryLine=na, slLine=na, tp1Line=na, tp2Line=na, tp3Line=na,
                          entryTag=na, slTag=na, tp1Tag=na, tp2Tag=na, tp3Tag=na,
-                         slLbl=na, tp1Lbl=na, tp2Lbl=na, tp3Lbl=na, entryInfoLbl=na, flipsUsed=s.flipsUsed + 1, entryBar=na, leftEntry=false))
+                         slLbl=na, tp1Lbl=na, tp2Lbl=na, tp3Lbl=na, entryInfoLbl=na, flipsUsed=s.flipsUsed + 1, entryBar=na, leftEntry=false, confirmedOutOfSession=false))
                     alert("Sideway Breakout Bot: watching the same range for an opposite breakout", alert.freq_once_per_bar_close)
                 removeThis := true
             else if finalTpHit
@@ -492,6 +493,10 @@ if numSetups > 0
                         alert("Sideway Breakout Bot: " + (s.dir == 1 ? "bullish" : "bearish") + " breakout confirmed, zone identified", alert.freq_once_per_bar_close)
                 else if bar_index - s.lockBar > maxBarsWatch
                     // No breakout for too long -- give up on this range entirely.
+                    noEntryInfo1 = "No entry\n" +
+                         "Range: " + str.tostring(s.lockedLow, format.mintick) + " - " + str.tostring(s.lockedHigh, format.mintick) + "\n" +
+                         "Reason: no full-body breakout within " + str.tostring(maxBarsWatch) + " bars (watched bar " + str.tostring(s.lockBar) + " to " + str.tostring(bar_index) + ")"
+                    label.new(bar_index, math.avg(s.lockedHigh, s.lockedLow), "i", style=label.style_label_down, color=color.new(color.gray, 0), textcolor=color.white, size=size.small, tooltip=noEntryInfo1)
                     removeThis := true
 
         // ============================================================
@@ -532,6 +537,12 @@ if numSetups > 0
                     // Candle failed to also clear the range -- treat the whole breakout as a
                     // fakeout. Reset direction and go back to state 1, still watching the SAME
                     // locked range (no need to wait for a brand-new consolidation).
+                    noEntryInfo4 = "No entry (yet)\n" +
+                         "Direction attempted: " + (s.dir == 1 ? "bullish" : "bearish") + "\n" +
+                         "Range: " + str.tostring(s.lockedLow, format.mintick) + " - " + str.tostring(s.lockedHigh, format.mintick) + "\n" +
+                         "Reason: breakout failed confirmation (fakeout) -- the candle right after the breakout didn't fully clear the range with a big enough body, or reversed back through it.\n" +
+                         "Back to watching the same range for a new breakout."
+                    label.new(bar_index, close, "i", style=label.style_label_down, color=color.new(color.gray, 0), textcolor=color.white, size=size.small, tooltip=noEntryInfo4)
                     s.dir := 0
                     s.breakoutTime := na
                     s.state := 1
@@ -548,6 +559,12 @@ if numSetups > 0
             minutesSinceBreakout5 = (time - s.breakoutTime) / 60000.0
 
             if invalidated5 or minutesSinceBreakout5 > retraceTimeoutMin
+                noEntryInfo5a = "No entry\n" +
+                     "Direction: " + (s.dir == 1 ? "bullish" : "bearish") + " impulse breakout\n" +
+                     "Range: " + str.tostring(s.lockedLow, format.mintick) + " - " + str.tostring(s.lockedHigh, format.mintick) + "\n" +
+                     "Reason: " + (invalidated5 ? "price fully reversed back through the far side of the range before the impulse entry could fire (thesis invalidated)." :
+                         "retracement timeout (" + str.tostring(retraceTimeoutMin) + " min) exceeded while waiting" + (not inSession ? " -- still outside the trading session window (" + sessionWindow + ") the whole time." : "."))
+                label.new(bar_index, close, "i", style=label.style_label_down, color=color.new(color.gray, 0), textcolor=color.white, size=size.small, tooltip=noEntryInfo5a)
                 removeThis := true
             else if inSession
                 // ---- Entry! entryPrice is this candle's open (the very next candle
@@ -560,6 +577,14 @@ if numSetups > 0
                 r = math.abs(candidateEntry - candidateSl)
 
                 if r <= 0 or (maxSlPips > 0 and r > maxSlPips * pipSize) or f_zoneAlreadyTraded(s.dir, s.lockedHigh, s.lockedLow)
+                    skipReason5 = r <= 0 ? "zero/invalid risk distance (entry landed exactly on the stop level)" :
+                         (maxSlPips > 0 and r > maxSlPips * pipSize) ? ("SL distance (" + str.tostring(r / pipSize, "#.#") + " pips) exceeds Max SL Distance (" + str.tostring(maxSlPips, "#.#") + " pips)") :
+                         "this exact range+direction already produced an entry before (retest-and-continue guard)"
+                    noEntryInfo5b = "No entry\n" +
+                         "Direction: " + (s.dir == 1 ? "bullish" : "bearish") + " impulse breakout\n" +
+                         "Range: " + str.tostring(s.lockedLow, format.mintick) + " - " + str.tostring(s.lockedHigh, format.mintick) + "\n" +
+                         "Reason: " + skipReason5
+                    label.new(bar_index, candidateEntry, "i", style=label.style_label_down, color=color.new(color.gray, 0), textcolor=color.white, size=size.small, tooltip=noEntryInfo5b)
                     removeThis := true
                 else
                     array.push(tradedHigh, s.lockedHigh)
@@ -672,6 +697,13 @@ if numSetups > 0
             // drop the setup (losing a legitimate entry) before this candle ever gets
             // the chance to close and confirm.
             if barstate.isconfirmed
+                // A real confirmation candle occurred, but outside the session window --
+                // remember this so the eventual no-entry tooltip (if this setup times out
+                // or invalidates without ever entering) can call it out specifically,
+                // instead of just saying "no confirmation arrived in time".
+                if confirmation and not inSession
+                    s.confirmedOutOfSession := true
+
                 if confirmation and inSession
                     // ---- Entry! Compute SL/TP levels and open the (simulated) trade. ----
                     // (A confirmation outside the session window just doesn't enter -- the
@@ -691,6 +723,14 @@ if numSetups > 0
                         // already produced an entry before (a retest-and-continue) -- skip the
                         // trade entirely (the range's width won't change, so there's no point
                         // waiting for a re-confirmation on this same setup).
+                        skipReason2 = r <= 0 ? "zero/invalid risk distance (close landed exactly on the opposite range boundary)" :
+                             (maxSlPips > 0 and r > maxSlPips * pipSize) ? ("SL distance (" + str.tostring(r / pipSize, "#.#") + " pips) exceeds Max SL Distance (" + str.tostring(maxSlPips, "#.#") + " pips)") :
+                             "this exact range+direction already produced an entry before (retest-and-continue guard)"
+                        noEntryInfo2a = "No entry\n" +
+                             "Direction: " + (s.dir == 1 ? "bullish" : "bearish") + "\n" +
+                             "Range: " + str.tostring(s.lockedLow, format.mintick) + " - " + str.tostring(s.lockedHigh, format.mintick) + "\n" +
+                             "Reason: " + skipReason2
+                        label.new(bar_index, candidateEntry, "i", style=label.style_label_down, color=color.new(color.gray, 0), textcolor=color.white, size=size.small, tooltip=noEntryInfo2a)
                         if not na(s.zoneBox)
                             box.delete(s.zoneBox)
                         removeThis := true
@@ -780,6 +820,15 @@ if numSetups > 0
 
                 else if invalidated or minutesSinceBreakout > retraceTimeoutMin
                     // Gave up waiting, or price fully reversed -- drop this setup.
+                    noEntryInfo2b = "No entry\n" +
+                         "Direction: " + (s.dir == 1 ? "bullish" : "bearish") + "\n" +
+                         "Range: " + str.tostring(s.lockedLow, format.mintick) + " - " + str.tostring(s.lockedHigh, format.mintick) + "\n" +
+                         "Zone: " + str.tostring(s.zoneLow, format.mintick) + " - " + str.tostring(s.zoneHigh, format.mintick) + " (touched: " + (s.touchedZone ? "yes" : "no") + ")\n" +
+                         "Reason: " + (invalidated ? "price fully reversed back through the far side of the range before a confirmed retracement arrived." :
+                             s.confirmedOutOfSession ? ("retracement timeout (" + str.tostring(retraceTimeoutMin) + " min) exceeded -- a valid confirmation candle DID occur, but only while outside the trading session window (" + sessionWindow + "), so it wasn't acted on.") :
+                             not s.touchedZone ? ("retracement timeout (" + str.tostring(retraceTimeoutMin) + " min) exceeded -- price never even reached the retracement zone.") :
+                             ("retracement timeout (" + str.tostring(retraceTimeoutMin) + " min) exceeded -- zone was touched but no confirmation candle closed beyond it in time."))
+                    label.new(bar_index, close, "i", style=label.style_label_down, color=color.new(color.gray, 0), textcolor=color.white, size=size.small, tooltip=noEntryInfo2b)
                     if not na(s.zoneBox)
                         box.delete(s.zoneBox)
                     removeThis := true
@@ -815,7 +864,7 @@ if freshRange and canArmNewSetup and barstate.isconfirmed
          riskBands=array.new<box>(), rewardBands=array.new<box>(),
          entryLine=na, slLine=na, tp1Line=na, tp2Line=na, tp3Line=na,
          entryTag=na, slTag=na, tp1Tag=na, tp2Tag=na, tp3Tag=na,
-         slLbl=na, tp1Lbl=na, tp2Lbl=na, tp3Lbl=na, entryInfoLbl=na, flipsUsed=0, entryBar=na, leftEntry=false))
+         slLbl=na, tp1Lbl=na, tp2Lbl=na, tp3Lbl=na, entryInfoLbl=na, flipsUsed=0, entryBar=na, leftEntry=false, confirmedOutOfSession=false))
 
 // ───────────────────────────── Plots / signals ─────────────────────────────
 plotshape(isLongEntry, "Long Entry", shape.triangleup, location.belowbar, color.green, text="L", textcolor=color.white, size=size.small)
