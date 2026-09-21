@@ -129,8 +129,12 @@ if rangeEvent
         lvl.set_y1(avg)
         lvl.set_xy2(n, avg)
         lvl.set_color(unbrokenCss)
-    else
-        // Otherwise this is a genuinely new range -- draw a fresh box/midline.
+    else if na(bx) or (ma - rAtr) > bx.get_top() or (ma + rAtr) < bx.get_bottom()
+        // Genuinely new AND doesn't overlap the previous box in price at all -- draw
+        // a fresh box/midline. If it DOES overlap the previous box's price but didn't
+        // qualify for the merge above (that box already broke, or this isn't time-
+        // adjacent to it), it's dropped below instead: a new range overlapping a
+        // previous one -- broken or not -- is never drawn or armed.
         rMax := ma + rAtr
         rMin := ma - rAtr
         bx := box.new(n[rangeLength], ma + rAtr, n, ma - rAtr, na, bgcolor=color.new(unbrokenCss, 80))
