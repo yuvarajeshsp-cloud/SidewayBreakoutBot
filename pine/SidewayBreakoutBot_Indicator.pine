@@ -143,6 +143,7 @@ plot(rMin, "Range Bottom", rMin != rMin[1] ? na : rOs == 0 ? unbrokenCss : rOs =
 
 // ───────────────────────────── Core calcs ─────────────────────────────
 atrVal = ta.atr(atrLength)
+iLblOffset = atrVal * 0.5   // vertical gap (in price, scaled to current volatility) that keeps every "i" tooltip marker clear of the candle's own high, so it stays reliably hoverable instead of sitting on top of the wick/body
 
 // time(...) returns this bar's timestamp if it falls inside sessionWindow (in sessionTz),
 // or na otherwise -- the standard Pine idiom for a session filter.
@@ -496,7 +497,7 @@ if numSetups > 0
                     noEntryInfo1 = "No entry\n" +
                          "Range: " + str.tostring(s.lockedLow, format.mintick) + " - " + str.tostring(s.lockedHigh, format.mintick) + "\n" +
                          "Reason: no full-body breakout within " + str.tostring(maxBarsWatch) + " bars (watched bar " + str.tostring(s.lockBar) + " to " + str.tostring(bar_index) + ")"
-                    label.new(bar_index, math.avg(s.lockedHigh, s.lockedLow), "i", style=label.style_label_down, color=color.new(color.gray, 0), textcolor=color.white, size=size.small, tooltip=noEntryInfo1)
+                    label.new(bar_index, high + iLblOffset, "i", style=label.style_label_down, color=color.new(color.gray, 0), textcolor=color.white, size=size.small, tooltip=noEntryInfo1)
                     removeThis := true
 
         // ============================================================
@@ -542,7 +543,7 @@ if numSetups > 0
                          "Range: " + str.tostring(s.lockedLow, format.mintick) + " - " + str.tostring(s.lockedHigh, format.mintick) + "\n" +
                          "Reason: breakout failed confirmation (fakeout) -- the candle right after the breakout didn't fully clear the range with a big enough body, or reversed back through it.\n" +
                          "Back to watching the same range for a new breakout."
-                    label.new(bar_index, close, "i", style=label.style_label_down, color=color.new(color.gray, 0), textcolor=color.white, size=size.small, tooltip=noEntryInfo4)
+                    label.new(bar_index, high + iLblOffset, "i", style=label.style_label_down, color=color.new(color.gray, 0), textcolor=color.white, size=size.small, tooltip=noEntryInfo4)
                     s.dir := 0
                     s.breakoutTime := na
                     s.state := 1
@@ -564,7 +565,7 @@ if numSetups > 0
                      "Range: " + str.tostring(s.lockedLow, format.mintick) + " - " + str.tostring(s.lockedHigh, format.mintick) + "\n" +
                      "Reason: " + (invalidated5 ? "price fully reversed back through the far side of the range before the impulse entry could fire (thesis invalidated)." :
                          "retracement timeout (" + str.tostring(retraceTimeoutMin) + " min) exceeded while waiting" + (not inSession ? " -- still outside the trading session window (" + sessionWindow + ") the whole time." : "."))
-                label.new(bar_index, close, "i", style=label.style_label_down, color=color.new(color.gray, 0), textcolor=color.white, size=size.small, tooltip=noEntryInfo5a)
+                label.new(bar_index, high + iLblOffset, "i", style=label.style_label_down, color=color.new(color.gray, 0), textcolor=color.white, size=size.small, tooltip=noEntryInfo5a)
                 removeThis := true
             else if inSession
                 // ---- Entry! entryPrice is this candle's open (the very next candle
@@ -584,7 +585,7 @@ if numSetups > 0
                          "Direction: " + (s.dir == 1 ? "bullish" : "bearish") + " impulse breakout\n" +
                          "Range: " + str.tostring(s.lockedLow, format.mintick) + " - " + str.tostring(s.lockedHigh, format.mintick) + "\n" +
                          "Reason: " + skipReason5
-                    label.new(bar_index, candidateEntry, "i", style=label.style_label_down, color=color.new(color.gray, 0), textcolor=color.white, size=size.small, tooltip=noEntryInfo5b)
+                    label.new(bar_index, high + iLblOffset, "i", style=label.style_label_down, color=color.new(color.gray, 0), textcolor=color.white, size=size.small, tooltip=noEntryInfo5b)
                     removeThis := true
                 else
                     array.push(tradedHigh, s.lockedHigh)
@@ -648,7 +649,7 @@ if numSetups > 0
                          "Risk (1R): " + str.tostring(r, format.mintick) + "\n" +
                          "Breakout bar: " + str.tostring(s.breakoutBar) + "   Entry bar: " + str.tostring(bar_index) +
                          (s.flipsUsed > 0 ? "\nFlip #" + str.tostring(s.flipsUsed) + " on this range after a prior SL" : "")
-                    s.entryInfoLbl := label.new(bar_index, s.entryPrice, "i", style=label.style_label_down, color=color.new(color.blue, 0), textcolor=color.white, size=size.small, tooltip=entryInfo5)
+                    s.entryInfoLbl := label.new(bar_index, high + iLblOffset, "i", style=label.style_label_down, color=color.new(color.blue, 0), textcolor=color.white, size=size.small, tooltip=entryInfo5)
                     alert("Sideway Breakout Bot: " + (s.dir == 1 ? "LONG" : "SHORT") + " entry signal", alert.freq_once_per_bar_close)
 
         // ============================================================
@@ -730,7 +731,7 @@ if numSetups > 0
                              "Direction: " + (s.dir == 1 ? "bullish" : "bearish") + "\n" +
                              "Range: " + str.tostring(s.lockedLow, format.mintick) + " - " + str.tostring(s.lockedHigh, format.mintick) + "\n" +
                              "Reason: " + skipReason2
-                        label.new(bar_index, candidateEntry, "i", style=label.style_label_down, color=color.new(color.gray, 0), textcolor=color.white, size=size.small, tooltip=noEntryInfo2a)
+                        label.new(bar_index, high + iLblOffset, "i", style=label.style_label_down, color=color.new(color.gray, 0), textcolor=color.white, size=size.small, tooltip=noEntryInfo2a)
                         if not na(s.zoneBox)
                             box.delete(s.zoneBox)
                         removeThis := true
@@ -815,7 +816,7 @@ if numSetups > 0
                              "Risk (1R): " + str.tostring(r, format.mintick) + "\n" +
                              "Breakout bar: " + str.tostring(s.breakoutBar) + "   Entry bar: " + str.tostring(bar_index) +
                              (s.flipsUsed > 0 ? "\nFlip #" + str.tostring(s.flipsUsed) + " on this range after a prior SL" : "")
-                        s.entryInfoLbl := label.new(bar_index, s.entryPrice, "i", style=label.style_label_down, color=color.new(color.blue, 0), textcolor=color.white, size=size.small, tooltip=entryInfo)
+                        s.entryInfoLbl := label.new(bar_index, high + iLblOffset, "i", style=label.style_label_down, color=color.new(color.blue, 0), textcolor=color.white, size=size.small, tooltip=entryInfo)
                         alert("Sideway Breakout Bot: " + (s.dir == 1 ? "LONG" : "SHORT") + " entry signal", alert.freq_once_per_bar_close)
 
                 else if invalidated or minutesSinceBreakout > retraceTimeoutMin
@@ -828,7 +829,7 @@ if numSetups > 0
                              s.confirmedOutOfSession ? ("retracement timeout (" + str.tostring(retraceTimeoutMin) + " min) exceeded -- a valid confirmation candle DID occur, but only while outside the trading session window (" + sessionWindow + "), so it wasn't acted on.") :
                              not s.touchedZone ? ("retracement timeout (" + str.tostring(retraceTimeoutMin) + " min) exceeded -- price never even reached the retracement zone.") :
                              ("retracement timeout (" + str.tostring(retraceTimeoutMin) + " min) exceeded -- zone was touched but no confirmation candle closed beyond it in time."))
-                    label.new(bar_index, close, "i", style=label.style_label_down, color=color.new(color.gray, 0), textcolor=color.white, size=size.small, tooltip=noEntryInfo2b)
+                    label.new(bar_index, high + iLblOffset, "i", style=label.style_label_down, color=color.new(color.gray, 0), textcolor=color.white, size=size.small, tooltip=noEntryInfo2b)
                     if not na(s.zoneBox)
                         box.delete(s.zoneBox)
                     removeThis := true
