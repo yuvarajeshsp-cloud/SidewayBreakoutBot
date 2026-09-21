@@ -16,6 +16,7 @@ maxBarsWatch = input.int(50, "Max Bars to Wait for Breakout", minval=1, group=gr
 allowStackedEntries = input.bool(true, "Allow Stacked Entries", group=grpRange)             // false = force exactly one setup at a time, overriding the count below
 maxConcurrentSetups = input.int(3, "Max Concurrent Setups", minval=1, maxval=10, group=grpRange) // cap on how many setups (watching or in-trade) can run at once when stacking is allowed
 maxSlFlips = input.int(1, "Max SL Flips per Range", minval=0, maxval=5, group=grpRange)     // after a stop-loss, how many times the SAME range may be re-watched for the opposite breakout (0 = never)
+retestGuardBars = input.int(200, "Retest Guard Window (bars, 0 = never expires)", minval=0, group=grpRange) // how long a completed entry keeps blocking a NEW same-direction setup at an overlapping price -- without an expiry, a symbol that later revisits a similar price band (common on a ranging instrument) can get permanently blocked from ever entering there again, even on a completely unrelated, much-later setup
 
 grpBreak = "Breakout"
 atrLength        = input.int(20, "ATR Length (SL/Filters)", minval=1, group=grpBreak)       // ATR used for the SL buffer and the body-size filter (not the range band above) -- lengthened from 14 for 1-min charts so a single noisy/spiky bar doesn't swing it as much
@@ -198,22 +199,28 @@ f_findZone(d, lockBarArg, lockedHighArg, lockedLowArg) =>
 
     [fH, fL]
 
-// Persistent (never cleared) record of every (range, direction) pair that has already
-// produced an entry, so a range that gets retested and re-consolidates later can't fire
-// a second same-direction entry -- an SL-flip is still allowed, since it watches for the
-// OPPOSITE direction and so never matches an entry already recorded here.
+// Record of every (range, direction) pair that has already produced an entry, so a range
+// that gets retested and re-consolidates later can't fire a second same-direction entry
+// -- an SL-flip is still allowed, since it watches for the OPPOSITE direction and so
+// never matches an entry already recorded here. Bounded by retestGuardBars (below) --
+// without an expiry, this grows forever and a ranging instrument that later happens to
+// revisit a similar price band (common, e.g. gold oscillating back through an old level
+// hundreds/thousands of bars later) would get permanently blocked from ever entering
+// there again, on a setup with no real relationship to the original trade.
 var array<float> tradedHigh = array.new<float>()
 var array<float> tradedLow  = array.new<float>()
 var array<int>   tradedDir  = array.new<int>()
+var array<int>   tradedBar  = array.new<int>()   // bar_index each entry above was recorded at
 
-// True if a same-direction entry already happened on a range that overlaps this one at
-// all (any shared price counts as "the same zone").
+// True if a same-direction entry already happened, RECENTLY ENOUGH (within
+// retestGuardBars, 0 = no expiry), on a range that overlaps this one at all (any shared
+// price counts as "the same zone").
 f_zoneAlreadyTraded(d, hi, lo) =>
     found = false
     n2 = array.size(tradedDir)
     if n2 > 0
         for i = 0 to n2 - 1
-            if not found and array.get(tradedDir, i) == d and hi >= array.get(tradedLow, i) and lo <= array.get(tradedHigh, i)
+            if not found and array.get(tradedDir, i) == d and hi >= array.get(tradedLow, i) and lo <= array.get(tradedHigh, i) and (retestGuardBars <= 0 or bar_index - array.get(tradedBar, i) <= retestGuardBars)
                 found := true
     found
 
@@ -609,6 +616,7 @@ if numSetups > 0
                     array.push(tradedHigh, s.lockedHigh)
                     array.push(tradedLow, s.lockedLow)
                     array.push(tradedDir, s.dir)
+                    array.push(tradedBar, bar_index)
 
                     s.entryPrice := candidateEntry
                     s.slPrice := candidateSl
@@ -747,6 +755,7 @@ if numSetups > 0
                         array.push(tradedHigh, s.lockedHigh)
                         array.push(tradedLow, s.lockedLow)
                         array.push(tradedDir, s.dir)
+                        array.push(tradedBar, bar_index)
 
                         s.entryPrice := candidateEntry
                         s.slPrice := candidateSl
