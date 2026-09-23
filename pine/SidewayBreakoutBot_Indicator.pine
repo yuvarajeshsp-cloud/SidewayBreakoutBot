@@ -223,10 +223,16 @@ inNewsBlackout = useNewsBlackout and newsBlackoutWindows != "" and not na(time(t
 // compared against the configured cutoff -- self-resetting every calendar day since
 // hour()/minute() always wrap back to 0 at midnight, no manual reset needed.
 fundedCurMinutesOfDay = hour(time, sessionTzResolved) * 60 + minute(time, sessionTzResolved)
-fundedIsFriday = dayofweek(time, sessionTzResolved) == dayofweek.friday
+fundedDow = dayofweek(time, sessionTzResolved)
+fundedIsFriday = fundedDow == dayofweek.friday
+// Saturday/Sunday count as "past the weekend cutoff" outright -- only relevant for a
+// symbol that actually trades through the weekend (e.g. crypto); for one that doesn't
+// (forex/CFDs), no bars exist then anyway so this branch never evaluates. Without it,
+// checking Friday alone would let the restriction silently switch back off on Sat/Sun.
+fundedIsWeekendDay = fundedDow == dayofweek.saturday or fundedDow == dayofweek.sunday
 weekendCutoffMinutesOfDay = weekendCutoffHour * 60 + weekendCutoffMinute
-weekendPastCutoff = useWeekendRestriction and fundedIsFriday and fundedCurMinutesOfDay >= weekendCutoffMinutesOfDay
-weekendBlockNewEntries = useWeekendRestriction and fundedIsFriday and fundedCurMinutesOfDay >= (weekendCutoffMinutesOfDay - weekendBlockBufferMin)
+weekendPastCutoff = useWeekendRestriction and (fundedIsWeekendDay or (fundedIsFriday and fundedCurMinutesOfDay >= weekendCutoffMinutesOfDay))
+weekendBlockNewEntries = useWeekendRestriction and (fundedIsWeekendDay or (fundedIsFriday and fundedCurMinutesOfDay >= (weekendCutoffMinutesOfDay - weekendBlockBufferMin)))
 
 overnightCutoffMinutesOfDay = overnightCutoffHour * 60 + overnightCutoffMinute
 overnightPastCutoff = useOvernightRestriction and fundedCurMinutesOfDay >= overnightCutoffMinutesOfDay
@@ -244,15 +250,16 @@ fundedCooldownActive = cooldownAfterLossMin > 0 and not na(lastLossTime) and (ti
 fundedBlockEntry = dailyLossBreached or dailyProfitBreached or inNewsBlackout or weekendBlockNewEntries or overnightBlockNewEntries or fundedCooldownActive
 
 // ───────────────────────────── Trend filter (50/200 EMA, higher timeframe) ─────────────────────────────
-// Two request.security() reads of the same higher-TF EMA pair: a CONFIRMED one (the
-// standard barstate.isrealtime ? [1] : [0] trick -- never repaints, but only updates once
-// the trend-TF bar itself closes, so a fresh cross can lag up to a full trend-TF bar), and
-// a LIVE one (the trend-TF bar's still-forming value -- reacts immediately, but can repaint
-// until that bar closes). Both are cheap: request.security is only ever called with these
-// fixed expressions, never inside a loop.
+// One request.security() call returning both a CONFIRMED read of the higher-TF EMA pair
+// (the standard barstate.isrealtime ? [1] : [0] trick -- never repaints, but only updates
+// once the trend-TF bar itself closes, so a fresh cross can lag up to a full trend-TF bar)
+// and a LIVE read (the trend-TF bar's still-forming value -- reacts immediately, but can
+// repaint until that bar closes). math.min/max guards against Fast/Slow being swapped by
+// mistake in the inputs above, which would otherwise silently invert bullish/bearish.
 trendTf = trendTfChoice == "1H" ? "60" : trendTfChoice == "4H" ? "240" : "D"
-[trendEma50Confirmed, trendEma200Confirmed] = request.security(syminfo.tickerid, trendTf, [ta.ema(close, trendEmaFast)[barstate.isrealtime ? 1 : 0], ta.ema(close, trendEmaSlow)[barstate.isrealtime ? 1 : 0]], lookahead=barmerge.lookahead_off)
-[trendEma50Live, trendEma200Live] = request.security(syminfo.tickerid, trendTf, [ta.ema(close, trendEmaFast), ta.ema(close, trendEmaSlow)], lookahead=barmerge.lookahead_off)
+trendEmaFastLen = math.min(trendEmaFast, trendEmaSlow)
+trendEmaSlowLen = math.max(trendEmaFast, trendEmaSlow)
+[trendEma50Confirmed, trendEma200Confirmed, trendEma50Live, trendEma200Live] = request.security(syminfo.tickerid, trendTf, [ta.ema(close, trendEmaFastLen)[barstate.isrealtime ? 1 : 0], ta.ema(close, trendEmaSlowLen)[barstate.isrealtime ? 1 : 0], ta.ema(close, trendEmaFastLen), ta.ema(close, trendEmaSlowLen)], lookahead=barmerge.lookahead_off)
 
 trendBullConfirmed = trendEma50Confirmed > trendEma200Confirmed
 trendBearConfirmed = trendEma50Confirmed < trendEma200Confirmed
@@ -326,6 +333,16 @@ var array<int>   tradedBar  = array.new<int>()   // bar each entry happened on, 
 // enough entries were on record, every later range at similar prices clipped an older one and
 // was refused, permanently.
 f_zoneAlreadyTraded(d, hi, lo) =>
+    // Entries are always pushed in increasing bar_index order, so the OLDEST one is
+    // always at the front -- once it's aged out of the window it can never become
+    // relevant again (age only increases), so drop it. Without this the arrays grow
+    // for the entire life of the chart and this scan gets slower every trade.
+    if retestGuardBars > 0
+        while array.size(tradedBar) > 0 and (bar_index - array.get(tradedBar, 0)) > retestGuardBars
+            array.shift(tradedHigh)
+            array.shift(tradedLow)
+            array.shift(tradedDir)
+            array.shift(tradedBar)
     found = false
     n2 = array.size(tradedDir)
     if n2 > 0 and retestGuardBars > 0
@@ -398,7 +415,6 @@ type Setup
     int   breakoutBar   // bar index of the initial breakout candle (anchors the touchedZone backfill in STATE 4 -- must NOT be lockBar, which predates the whole state-1 watching period)
     bool  isImpulse     // true if this setup entered via the impulse-breakout path (skipped the fakeout/retracement wait)
     float impulsePct    // % of the range's height the breakout candle's body closed beyond the boundary (only meaningful when isImpulse)
-    float preBreakoutLevel  // high/low of the candle immediately before the breakout candle -- one of two impulse-entry SL candidates (see STATE 5)
     float zoneHigh      // top of the retracement target zone (FVG or range fallback)
     float zoneLow       // bottom of the retracement target zone
     bool  touchedZone   // true once price has traded into the zone at least once
@@ -574,7 +590,7 @@ if numSetups > 0
                 alert("Sideway Breakout Bot: SL hit, trade closed", alert.freq_once_per_bar_close)
                 if s.flipsUsed < maxSlFlips
                     array.push(setups, Setup.new(state=1, lockedHigh=s.lockedHigh, lockedLow=s.lockedLow, lockBar=bar_index, dir=0, breakoutTime=na, breakoutBar=na,
-                         isImpulse=false, impulsePct=na, preBreakoutLevel=na,
+                         isImpulse=false, impulsePct=na,
                          zoneHigh=na, zoneLow=na, touchedZone=false, zoneBox=na, slPrice=na, entryPrice=na,
                          tp1Price=na, tp2Price=na, tp3Price=na, tp1Hit=false, tp2Hit=false, tp3Hit=false,
                          riskBands=array.new<box>(), rewardBands=array.new<box>(),
@@ -660,11 +676,6 @@ if numSetups > 0
                     if isImpulse
                         s.isImpulse := true
                         s.impulsePct := breakoutDist / rangeHeight * 100
-                        // Precompute the impulse-entry SL level now, right at the breakout
-                        // bar: the wick (low for a long, high for a short) of the single
-                        // candle right before this breakout candle -- the base of the
-                        // impulse move.
-                        s.preBreakoutLevel := s.dir == 1 ? low[1] : high[1]
                         s.state := 5
                         s.stageLog := s.stageLog + "\nState 1: " + (bullBreak ? "Bullish" : "Bearish") + " full-body breakout at bar " + str.tostring(bar_index) + " (close " + str.tostring(close, format.mintick) + "), body " + str.tostring(s.impulsePct, "#.#") + "% beyond range -> impulse detected, entering next candle (State 5)."
                         alert("Sideway Breakout Bot: " + (bullBreak ? "bullish" : "bearish") + " impulse breakout (" + str.tostring(s.impulsePct, "#.#") + "% beyond range), entering next candle", alert.freq_once_per_bar_close)
@@ -1029,7 +1040,7 @@ canArmNewSetup = array.size(setups) < (singleTradeOnly ? 1 : (allowStackedEntrie
 // boundaries that a settled close would never have produced.
 if freshRange and canArmNewSetup and barstate.isconfirmed
     array.push(setups, Setup.new(state=1, lockedHigh=rMax, lockedLow=rMin, lockBar=n, dir=0, breakoutTime=na, breakoutBar=na,
-         isImpulse=false, impulsePct=na, preBreakoutLevel=na,
+         isImpulse=false, impulsePct=na,
          zoneHigh=na, zoneLow=na, touchedZone=false, zoneBox=na, slPrice=na, entryPrice=na,
          tp1Price=na, tp2Price=na, tp3Price=na, tp1Hit=false, tp2Hit=false, tp3Hit=false,
          riskBands=array.new<box>(), rewardBands=array.new<box>(),

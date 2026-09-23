@@ -220,10 +220,16 @@ inNewsBlackout = useNewsBlackout and newsBlackoutWindows != "" and not na(time(t
 // compared against the configured cutoff -- self-resetting every calendar day since
 // hour()/minute() always wrap back to 0 at midnight, no manual reset needed.
 fundedCurMinutesOfDay = hour(time, sessionTzResolved) * 60 + minute(time, sessionTzResolved)
-fundedIsFriday = dayofweek(time, sessionTzResolved) == dayofweek.friday
+fundedDow = dayofweek(time, sessionTzResolved)
+fundedIsFriday = fundedDow == dayofweek.friday
+// Saturday/Sunday count as "past the weekend cutoff" outright -- only relevant for a
+// symbol that actually trades through the weekend (e.g. crypto); for one that doesn't
+// (forex/CFDs), no bars exist then anyway so this branch never evaluates. Without it,
+// checking Friday alone would let the restriction silently switch back off on Sat/Sun.
+fundedIsWeekendDay = fundedDow == dayofweek.saturday or fundedDow == dayofweek.sunday
 weekendCutoffMinutesOfDay = weekendCutoffHour * 60 + weekendCutoffMinute
-weekendPastCutoff = useWeekendRestriction and fundedIsFriday and fundedCurMinutesOfDay >= weekendCutoffMinutesOfDay
-weekendBlockNewEntries = useWeekendRestriction and fundedIsFriday and fundedCurMinutesOfDay >= (weekendCutoffMinutesOfDay - weekendBlockBufferMin)
+weekendPastCutoff = useWeekendRestriction and (fundedIsWeekendDay or (fundedIsFriday and fundedCurMinutesOfDay >= weekendCutoffMinutesOfDay))
+weekendBlockNewEntries = useWeekendRestriction and (fundedIsWeekendDay or (fundedIsFriday and fundedCurMinutesOfDay >= (weekendCutoffMinutesOfDay - weekendBlockBufferMin)))
 
 overnightCutoffMinutesOfDay = overnightCutoffHour * 60 + overnightCutoffMinute
 overnightPastCutoff = useOvernightRestriction and fundedCurMinutesOfDay >= overnightCutoffMinutesOfDay
@@ -241,15 +247,16 @@ fundedCooldownActive = cooldownAfterLossMin > 0 and not na(lastLossTime) and (ti
 fundedBlockEntry = dailyLossBreached or dailyProfitBreached or inNewsBlackout or weekendBlockNewEntries or overnightBlockNewEntries or fundedCooldownActive
 
 // ───────────────────────────── Trend filter (50/200 EMA, higher timeframe) ─────────────────────────────
-// Two request.security() reads of the same higher-TF EMA pair: a CONFIRMED one (the
-// standard barstate.isrealtime ? [1] : [0] trick -- never repaints, but only updates once
-// the trend-TF bar itself closes, so a fresh cross can lag up to a full trend-TF bar), and
-// a LIVE one (the trend-TF bar's still-forming value -- reacts immediately, but can repaint
-// until that bar closes). Both are cheap: request.security is only ever called with these
-// fixed expressions, never inside a loop.
+// One request.security() call returning both a CONFIRMED read of the higher-TF EMA pair
+// (the standard barstate.isrealtime ? [1] : [0] trick -- never repaints, but only updates
+// once the trend-TF bar itself closes, so a fresh cross can lag up to a full trend-TF bar)
+// and a LIVE read (the trend-TF bar's still-forming value -- reacts immediately, but can
+// repaint until that bar closes). math.min/max guards against Fast/Slow being swapped by
+// mistake in the inputs above, which would otherwise silently invert bullish/bearish.
 trendTf = trendTfChoice == "1H" ? "60" : trendTfChoice == "4H" ? "240" : "D"
-[trendEma50Confirmed, trendEma200Confirmed] = request.security(syminfo.tickerid, trendTf, [ta.ema(close, trendEmaFast)[barstate.isrealtime ? 1 : 0], ta.ema(close, trendEmaSlow)[barstate.isrealtime ? 1 : 0]], lookahead=barmerge.lookahead_off)
-[trendEma50Live, trendEma200Live] = request.security(syminfo.tickerid, trendTf, [ta.ema(close, trendEmaFast), ta.ema(close, trendEmaSlow)], lookahead=barmerge.lookahead_off)
+trendEmaFastLen = math.min(trendEmaFast, trendEmaSlow)
+trendEmaSlowLen = math.max(trendEmaFast, trendEmaSlow)
+[trendEma50Confirmed, trendEma200Confirmed, trendEma50Live, trendEma200Live] = request.security(syminfo.tickerid, trendTf, [ta.ema(close, trendEmaFastLen)[barstate.isrealtime ? 1 : 0], ta.ema(close, trendEmaSlowLen)[barstate.isrealtime ? 1 : 0], ta.ema(close, trendEmaFastLen), ta.ema(close, trendEmaSlowLen)], lookahead=barmerge.lookahead_off)
 
 trendBullConfirmed = trendEma50Confirmed > trendEma200Confirmed
 trendBearConfirmed = trendEma50Confirmed < trendEma200Confirmed
