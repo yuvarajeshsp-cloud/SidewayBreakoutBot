@@ -62,6 +62,31 @@ sessionTz = input.string("Asia/Kolkata", "Session Timezone", group=grpSession)  
 // so translate it to syminfo.timezone instead of letting it crash time() below.
 sessionTzResolved = sessionTz == "Exchange" ? syminfo.timezone : sessionTz
 
+grpFunded = "Funded Account Rules"
+useDailyLossLimit = input.bool(false, "Enable Max Daily Loss %", group=grpFunded)            // once today's REALIZED loss reaches this % of the day's starting balance, no new entries are taken until the next trading day -- any trade already open keeps running to its own SL/TP
+maxDailyLossPct = input.float(5.0, "Max Daily Loss %", minval=0, step=0.1, group=grpFunded)
+useDailyProfitLimit = input.bool(false, "Enable Max Daily Profit %", group=grpFunded)         // same idea in reverse -- stop taking new trades once today's realized gain reaches this %
+maxDailyProfitPct = input.float(5.0, "Max Daily Profit %", minval=0, step=0.1, group=grpFunded)
+dailyResetHour = input.int(0, "Daily Reset Hour (0-23, Session Timezone)", minval=0, maxval=23, group=grpFunded) // when the "trading day" used by the two limits above rolls over -- most firms reset at midnight server time, adjust to match yours
+
+singleTradeOnly = input.bool(false, "Only Allow 1 Trade At A Time", group=grpFunded)          // hard-caps the effective concurrent-setup limit at 1, overriding Allow Stacked Entries / Max Concurrent Setups above whenever true
+
+useNewsBlackout = input.bool(false, "Enable News Blackout Windows", group=grpFunded)
+newsBlackoutWindows = input.session("0000-0001", "News Blackout Windows (comma-separated HHMM-HHMM)", group=grpFunded) // Pine has no live economic calendar -- maintain this manually before known high-impact releases (NFP, FOMC, CPI), e.g. "0825-0855,1315-1345". Blocks new entries only; never affects an already-open trade. Default is a negligible 1-minute placeholder -- replace it before enabling
+
+useWeekendRestriction = input.bool(false, "Weekend Holding Restriction", group=grpFunded)
+weekendCutoffHour = input.int(21, "Weekend Cutoff Hour (Friday, Session Timezone)", minval=0, maxval=23, group=grpFunded)
+weekendCutoffMinute = input.int(0, "Weekend Cutoff Minute", minval=0, maxval=59, group=grpFunded)
+weekendBlockBufferMin = input.int(60, "Block New Entries This Many Minutes Before Cutoff", minval=0, group=grpFunded)
+
+useOvernightRestriction = input.bool(false, "Overnight Holding Restriction", group=grpFunded)
+overnightCutoffHour = input.int(21, "Overnight Cutoff Hour (Daily, Session Timezone)", minval=0, maxval=23, group=grpFunded)
+overnightCutoffMinute = input.int(0, "Overnight Cutoff Minute", minval=0, maxval=59, group=grpFunded)
+overnightBlockBufferMin = input.int(60, "Block New Entries This Many Minutes Before Cutoff", minval=0, group=grpFunded)
+
+minHoldingMin = input.int(0, "Minimum Holding Time (minutes, 0=off)", minval=0, group=grpFunded)         // only suppresses the stagnation-close above -- never delays a real SL/TP exit, which always fires immediately on real price action
+cooldownAfterLossMin = input.int(0, "Cooldown After a Loss (minutes, 0=off)", minval=0, group=grpFunded) // blocks new entries (including an SL-flip re-entry) for this long after a real SL loss -- not a breakeven stop, a TP close, or a stagnant close
+
 grpVis = "Visuals"
 showZone      = input.bool(true, "Show Retracement Zone", group=grpVis)                     // draw the orange box marking the FVG/range retracement zone while waiting for entry
 showTradeZone = input.bool(true, "Show Risk/Reward Zone", group=grpVis)                     // draw the red (risk) / green (reward) boxes and TP lines for each trade
@@ -158,6 +183,59 @@ iLblOffset = atrVal * 0.5   // vertical gap (in price, scaled to current volatil
 // or na otherwise -- the standard Pine idiom for a session filter.
 inSession = not useSessionFilter or not na(time(timeframe.period, sessionWindow, sessionTzResolved))
 
+// ───────────────────────────── Funded account rules ─────────────────────────────
+// This indicator has no real account connection, so "today's P&L" here is a running
+// total of REALIZED results from the simulated tradeHistory below, converted to $ via
+// the same dashBalance/dashRiskPct the dashboard uses -- an approximation, not a live
+// equity feed. Set dashBalance/dashRiskPct to match your real account for this to be
+// meaningful. (The Strategy script tracks this more accurately, via its real
+// strategy.equity, which also reflects floating P&L on any open position.)
+var float cumRealizedPnL    = 0.0   // running total $ P&L across every closed (simulated) trade
+var float fundedDayStartCum = 0.0   // snapshot of cumRealizedPnL at the most recent daily-reset boundary
+var int   fundedDayKey      = na
+var int   lastLossTime      = na    // timestamp of the most recent real SL loss (not breakeven/TP/stagnant) -- drives the cooldown below
+
+fundedShiftedTime = time - dailyResetHour * 3600000
+fundedCurDayKey = year(fundedShiftedTime, sessionTzResolved) * 10000 + month(fundedShiftedTime, sessionTzResolved) * 100 + dayofmonth(fundedShiftedTime, sessionTzResolved)
+if barstate.isconfirmed and (na(fundedDayKey) or fundedCurDayKey != fundedDayKey)
+    fundedDayKey := fundedCurDayKey
+    fundedDayStartCum := cumRealizedPnL
+
+fundedDayStartEquity = dashBalance + fundedDayStartCum
+fundedTodayPnL = cumRealizedPnL - fundedDayStartCum
+fundedTodayPnLPct = fundedDayStartEquity > 0 ? fundedTodayPnL / fundedDayStartEquity * 100 : 0.0
+dailyLossBreached = useDailyLossLimit and fundedTodayPnLPct <= -maxDailyLossPct
+dailyProfitBreached = useDailyProfitLimit and fundedTodayPnLPct >= maxDailyProfitPct
+
+// News blackout: Pine has no live economic calendar -- newsBlackoutWindows is a
+// manually-maintained session string (same "HHMM-HHMM[,HHMM-HHMM...]" format as
+// sessionWindow above), so time() reuses the exact same idiom used for inSession.
+inNewsBlackout = useNewsBlackout and newsBlackoutWindows != "" and not na(time(timeframe.period, newsBlackoutWindows, sessionTzResolved))
+
+// Weekend/overnight cutoffs are computed as minutes-of-day in sessionTzResolved and
+// compared against the configured cutoff -- self-resetting every calendar day since
+// hour()/minute() always wrap back to 0 at midnight, no manual reset needed.
+fundedCurMinutesOfDay = hour(time, sessionTzResolved) * 60 + minute(time, sessionTzResolved)
+fundedIsFriday = dayofweek(time, sessionTzResolved) == dayofweek.friday
+weekendCutoffMinutesOfDay = weekendCutoffHour * 60 + weekendCutoffMinute
+weekendPastCutoff = useWeekendRestriction and fundedIsFriday and fundedCurMinutesOfDay >= weekendCutoffMinutesOfDay
+weekendBlockNewEntries = useWeekendRestriction and fundedIsFriday and fundedCurMinutesOfDay >= (weekendCutoffMinutesOfDay - weekendBlockBufferMin)
+
+overnightCutoffMinutesOfDay = overnightCutoffHour * 60 + overnightCutoffMinute
+overnightPastCutoff = useOvernightRestriction and fundedCurMinutesOfDay >= overnightCutoffMinutesOfDay
+overnightBlockNewEntries = useOvernightRestriction and fundedCurMinutesOfDay >= (overnightCutoffMinutesOfDay - overnightBlockBufferMin)
+
+// Any open position gets force-flattened (see STATE 3) the moment either cutoff hits.
+fundedForceFlatten = weekendPastCutoff or overnightPastCutoff
+
+fundedCooldownActive = cooldownAfterLossMin > 0 and not na(lastLossTime) and (time - lastLossTime) < cooldownAfterLossMin * 60000
+
+// Combined gate checked at every entry point below, exactly like inSession -- a setup
+// that's blocked just keeps waiting (and can still time out normally) rather than being
+// dropped outright, since most of these restrictions are temporary (news window closes,
+// cooldown expires, tomorrow's daily limit resets).
+fundedBlockEntry = dailyLossBreached or dailyProfitBreached or inNewsBlackout or weekendBlockNewEntries or overnightBlockNewEntries or fundedCooldownActive
+
 // Scans the breakout leg for the nearest FVG; if none is found, falls back to
 // a retracement touch of the sideways zone itself (its high/low). Returns
 // [zoneHigh, zoneLow]. Read-only over outer state so it stays a plain function.
@@ -237,7 +315,7 @@ f_zoneAlreadyTraded(d, hi, lo) =>
 type TradeRecord
     int    exitTime    // timestamp the trade closed, drives the dashboard's daily/weekly/monthly filter
     int    dir         // 1 = long, -1 = short
-    string exitReason  // "SL", "Breakeven", "TP1", "TP2", "TP3", or "Stagnant"
+    string exitReason  // "SL", "Breakeven", "TP1", "TP2", "TP3", "Stagnant", or "Restriction" (funded-account weekend/overnight cutoff)
     float  rResult     // realized result in R multiples (e.g. +2.0, -1.0, 0 at breakeven)
     bool   isImpulse   // true if this trade came from the impulse-breakout entry path
     int    tpsReached  // how many TP tiers were reached before this trade closed (0..numTPs) -- feeds the scenario table below
@@ -320,6 +398,7 @@ type Setup
     label entryInfoLbl  // small dot at the entry point carrying a tooltip that explains why the entry fired (range/zone/levels used)
     int   flipsUsed     // how many times this range's lineage has already flipped direction after an SL
     int   entryBar      // bar index of entry (used for the stagnation timeout)
+    int   entryTime     // timestamp of entry (used for the funded-account minimum holding time)
     bool  leftEntry     // true once price has ever moved in the trade's favor past entryPrice
     bool  confirmedOutOfSession  // true once a valid STATE 2 confirmation candle occurred while outside the session window -- feeds the no-entry tooltip if this setup later times out/invalidates without ever entering
     string stageLog     // one line appended per state transition/event, each with the actual computed values (bar, price, %) -- the running flow shown in every "i" tooltip, so hovering any of them shows the whole lifecycle so far, not just the latest event
@@ -422,7 +501,11 @@ if numSetups > 0
             // a little). If that never happens within `stagnationBars`, flag it stagnant.
             if not s.leftEntry and (s.dir == 1 ? high > s.entryPrice : low < s.entryPrice)
                 s.leftEntry := true
-            stagnant = stagnationBars > 0 and not s.leftEntry and (bar_index - s.entryBar) >= stagnationBars
+            // minHoldingMin (funded-account rule) only suppresses THIS early-close path --
+            // it never delays a real SL/TP exit below, since holding a losing trade open
+            // longer just to satisfy a timer would be actively harmful.
+            pastMinHold = minHoldingMin <= 0 or (time - s.entryTime) >= minHoldingMin * 60000
+            stagnant = stagnationBars > 0 and not s.leftEntry and (bar_index - s.entryBar) >= stagnationBars and pastMinHold
 
             // "Final" TP = whichever TP tier is the last one actually enabled by numTPs.
             finalTpHit = numTPs == 1 ? s.tp1Hit : numTPs == 2 ? s.tp2Hit : s.tp3Hit
@@ -449,7 +532,11 @@ if numSetups > 0
                     s.slLbl := label.new(bar_index, stopNow, "SL", style=label.style_circle, color=dnCss, textcolor=color.white, size=size.tiny)
                 exitSignal := true
                 slHitSignal := true
-                array.push(tradeHistory, TradeRecord.new(exitTime=time, dir=s.dir, exitReason=(stopNow == s.entryPrice ? "Breakeven" : "SL"), rResult=f_realizedR(tpsReachedNow, stopNow, s.entryPrice, riskDistance, s.dir), isImpulse=s.isImpulse, tpsReached=tpsReachedNow))
+                rResultNow = f_realizedR(tpsReachedNow, stopNow, s.entryPrice, riskDistance, s.dir)
+                array.push(tradeHistory, TradeRecord.new(exitTime=time, dir=s.dir, exitReason=(stopNow == s.entryPrice ? "Breakeven" : "SL"), rResult=rResultNow, isImpulse=s.isImpulse, tpsReached=tpsReachedNow))
+                cumRealizedPnL += rResultNow * (dashBalance * dashRiskPct / 100.0)
+                if stopNow != s.entryPrice
+                    lastLossTime := time   // a real loss (not breakeven) -- starts the funded-account cooldown, if enabled
                 s.stageLog := s.stageLog + "\nState 3: " + (stopNow == s.entryPrice ? "Breakeven stop" : "SL") + " hit at bar " + str.tostring(bar_index) + " (" + str.tostring(stopNow, format.mintick) + ") -> trade closed."
                 label.new(bar_index, high + iLblOffset, "i", style=label.style_label_down, color=color.new(color.gray, 0), textcolor=color.white, size=size.small, tooltip=s.stageLog)
                 alert("Sideway Breakout Bot: SL hit, trade closed", alert.freq_once_per_bar_close)
@@ -461,7 +548,7 @@ if numSetups > 0
                          riskBands=array.new<box>(), rewardBands=array.new<box>(),
                          entryLine=na, slLine=na, tp1Line=na, tp2Line=na, tp3Line=na,
                          entryTag=na, slTag=na, tp1Tag=na, tp2Tag=na, tp3Tag=na,
-                         slLbl=na, tp1Lbl=na, tp2Lbl=na, tp3Lbl=na, entryInfoLbl=na, flipsUsed=s.flipsUsed + 1, entryBar=na, leftEntry=false, confirmedOutOfSession=false,
+                         slLbl=na, tp1Lbl=na, tp2Lbl=na, tp3Lbl=na, entryInfoLbl=na, flipsUsed=s.flipsUsed + 1, entryBar=na, entryTime=na, leftEntry=false, confirmedOutOfSession=false,
                          stageLog="State 1: Re-watching range " + str.tostring(s.lockedLow, format.mintick) + " - " + str.tostring(s.lockedHigh, format.mintick) + " for the opposite breakout after an SL (flip #" + str.tostring(s.flipsUsed + 1) + ")."))
                     alert("Sideway Breakout Bot: watching the same range for an opposite breakout", alert.freq_once_per_bar_close)
                 removeThis := true
@@ -469,7 +556,9 @@ if numSetups > 0
                 // Trade won all the way to its last target -- just close, no flip.
                 finalTpPrice = numTPs == 1 ? s.tp1Price : numTPs == 2 ? s.tp2Price : s.tp3Price
                 exitSignal := true
-                array.push(tradeHistory, TradeRecord.new(exitTime=time, dir=s.dir, exitReason=(numTPs == 1 ? "TP1" : numTPs == 2 ? "TP2" : "TP3"), rResult=f_realizedR(tpsReachedNow, finalTpPrice, s.entryPrice, riskDistance, s.dir), isImpulse=s.isImpulse, tpsReached=tpsReachedNow))
+                rResultNow = f_realizedR(tpsReachedNow, finalTpPrice, s.entryPrice, riskDistance, s.dir)
+                array.push(tradeHistory, TradeRecord.new(exitTime=time, dir=s.dir, exitReason=(numTPs == 1 ? "TP1" : numTPs == 2 ? "TP2" : "TP3"), rResult=rResultNow, isImpulse=s.isImpulse, tpsReached=tpsReachedNow))
+                cumRealizedPnL += rResultNow * (dashBalance * dashRiskPct / 100.0)
                 // TP1/TP2/TP3-hit lines above already logged each tier as it hit (including
                 // "trade closed" on the final tier), so nothing further to append here --
                 // just surface the complete flow at the exact bar the trade actually closes.
@@ -479,11 +568,24 @@ if numSetups > 0
                 // Trade never showed any progress -- cut it, no flip (this isn't an SL hit).
                 exitSignal := true
                 stagnantSignal := true
-                array.push(tradeHistory, TradeRecord.new(exitTime=time, dir=s.dir, exitReason="Stagnant", rResult=f_realizedR(tpsReachedNow, close, s.entryPrice, riskDistance, s.dir), isImpulse=s.isImpulse, tpsReached=tpsReachedNow))
+                rResultNow = f_realizedR(tpsReachedNow, close, s.entryPrice, riskDistance, s.dir)
+                array.push(tradeHistory, TradeRecord.new(exitTime=time, dir=s.dir, exitReason="Stagnant", rResult=rResultNow, isImpulse=s.isImpulse, tpsReached=tpsReachedNow))
+                cumRealizedPnL += rResultNow * (dashBalance * dashRiskPct / 100.0)
                 s.stageLog := s.stageLog + "\nState 3: No progress within " + str.tostring(stagnationBars) + " bars (price never traded past entry in its favor) -> trade closed stagnant at " + str.tostring(close, format.mintick) + "."
                 label.new(bar_index, high + iLblOffset, "i", style=label.style_label_down, color=color.new(color.gray, 0), textcolor=color.white, size=size.small, tooltip=s.stageLog)
                 removeThis := true
                 alert("Sideway Breakout Bot: stagnant trade closed after " + str.tostring(stagnationBars) + " bars", alert.freq_once_per_bar_close)
+            else if fundedForceFlatten
+                // Funded-account weekend/overnight holding restriction hit its cutoff --
+                // close whatever remains at market, no flip (this isn't an SL hit).
+                exitSignal := true
+                rResultNow = f_realizedR(tpsReachedNow, close, s.entryPrice, riskDistance, s.dir)
+                array.push(tradeHistory, TradeRecord.new(exitTime=time, dir=s.dir, exitReason="Restriction", rResult=rResultNow, isImpulse=s.isImpulse, tpsReached=tpsReachedNow))
+                cumRealizedPnL += rResultNow * (dashBalance * dashRiskPct / 100.0)
+                s.stageLog := s.stageLog + "\nState 3: Closed at " + str.tostring(close, format.mintick) + " -- funded-account holding restriction (weekend/overnight) reached its cutoff, no flip."
+                label.new(bar_index, high + iLblOffset, "i", style=label.style_label_down, color=color.new(color.gray, 0), textcolor=color.white, size=size.small, tooltip=s.stageLog)
+                removeThis := true
+                alert("Sideway Breakout Bot: trade closed -- funded-account holding restriction cutoff reached", alert.freq_once_per_bar_close)
 
         // ============================================================
         // STATE 1 -- watching the locked range for a full-body breakout
@@ -612,7 +714,7 @@ if numSetups > 0
                      "Retracement timeout (" + str.tostring(retraceTimeoutMin) + " min) exceeded while waiting" + (not inSession ? " -- still outside the trading session window (" + sessionWindow + ") the whole time." : ".")) + " -> setup dropped."
                 label.new(bar_index, high + iLblOffset, "i", style=label.style_label_down, color=color.new(color.gray, 0), textcolor=color.white, size=size.small, tooltip=s.stageLog)
                 removeThis := true
-            else if inSession
+            else if inSession and not fundedBlockEntry
                 // ---- Entry! entryPrice is this candle's open (the very next candle
                 // after the impulse breakout candle) instead of a confirmed retracement
                 // close. The SL sits just beyond the far side of the locked range
@@ -645,6 +747,7 @@ if numSetups > 0
 
                     s.state := 3
                     s.entryBar := bar_index
+                    s.entryTime := time
                     if s.dir == 1
                         isLongEntry := true
                     else
@@ -742,9 +845,10 @@ if numSetups > 0
                 if confirmation and not inSession
                     s.confirmedOutOfSession := true
 
-                if confirmation and inSession
+                if confirmation and inSession and not fundedBlockEntry
                     // ---- Entry! Compute SL/TP levels and open the (simulated) trade. ----
-                    // (A confirmation outside the session window just doesn't enter -- the
+                    // (A confirmation outside the session window, or while a funded-account
+                    // rule is currently blocking new entries, just doesn't enter -- the
                     // setup stays in state 2 and can still enter later if price re-confirms,
                     // or gets invalidated/timed out normally below in the meantime.)
                     candidateEntry = close
@@ -783,6 +887,7 @@ if numSetups > 0
 
                         s.state := 3
                         s.entryBar := bar_index
+                        s.entryTime := time
                         if s.dir == 1
                             isLongEntry := true
                         else
@@ -875,7 +980,7 @@ if numSetups > 0
 // though a slot became available later in the very same bar. This is safe to defer: a
 // range just detected this bar always has close within [rMin, rMax] by construction, so
 // its own breakout condition can never be satisfied on this same bar anyway.
-canArmNewSetup = allowStackedEntries ? array.size(setups) < maxConcurrentSetups : array.size(setups) == 0
+canArmNewSetup = array.size(setups) < (singleTradeOnly ? 1 : (allowStackedEntries ? maxConcurrentSetups : 1))
 // barstate.isconfirmed: rCount (and so rangeEvent/freshRange) reads close[0], the
 // current bar's own close, which is still live and changing on every tick until the
 // bar actually finishes -- without this gate, a range could be armed off an intrabar
@@ -889,7 +994,7 @@ if freshRange and canArmNewSetup and barstate.isconfirmed
          riskBands=array.new<box>(), rewardBands=array.new<box>(),
          entryLine=na, slLine=na, tp1Line=na, tp2Line=na, tp3Line=na,
          entryTag=na, slTag=na, tp1Tag=na, tp2Tag=na, tp3Tag=na,
-         slLbl=na, tp1Lbl=na, tp2Lbl=na, tp3Lbl=na, entryInfoLbl=na, flipsUsed=0, entryBar=na, leftEntry=false, confirmedOutOfSession=false,
+         slLbl=na, tp1Lbl=na, tp2Lbl=na, tp3Lbl=na, entryInfoLbl=na, flipsUsed=0, entryBar=na, entryTime=na, leftEntry=false, confirmedOutOfSession=false,
          stageLog="State 1: Range locked " + str.tostring(rMin, format.mintick) + " - " + str.tostring(rMax, format.mintick) + " at bar " + str.tostring(n) + " -- watching for a full-body breakout (max " + str.tostring(maxBarsWatch) + " bars)."))
 
 // ───────────────────────────── Plots / signals ─────────────────────────────
@@ -921,7 +1026,7 @@ var table dashTable = na
 
 if showDashboard and barstate.islast
     if na(dashTable)
-        dashTable := table.new(f_dashPosition(dashboardPosition), 2, 12, bgcolor=color.new(color.black, 15), border_width=1, border_color=color.gray, frame_width=1, frame_color=color.gray)
+        dashTable := table.new(f_dashPosition(dashboardPosition), 2, 13, bgcolor=color.new(color.black, 15), border_width=1, border_color=color.gray, frame_width=1, frame_color=color.gray)
 
     // Rolling window measured back from this (the most recent) bar's time -- not a
     // calendar-aligned day/week/month -- so behavior is consistent across timeframes
@@ -937,6 +1042,7 @@ if showDashboard and barstate.islast
     int tp2Count = 0    // closed AT TP2 (TP2 is the final/last tier)
     int tp3Count = 0    // closed AT TP3 (TP3 is the final/last tier)
     int stagnantCount = 0
+    int restrictionCount = 0   // closed early by a funded-account weekend/overnight holding restriction
     float totalR = 0.0
 
     nHist = array.size(tradeHistory)
@@ -961,6 +1067,8 @@ if showDashboard and barstate.islast
                     tp3Count += 1
                 else if rec.exitReason == "Stagnant"
                     stagnantCount += 1
+                else if rec.exitReason == "Restriction"
+                    restrictionCount += 1
 
     riskAmt = dashBalance * dashRiskPct / 100.0
     gainCash = totalR * riskAmt
@@ -990,9 +1098,11 @@ if showDashboard and barstate.islast
     table.cell(dashTable, 1, 7, str.tostring(tp3Count), text_color=posColor, text_halign=text.align_right, text_size=size.small)
     table.cell(dashTable, 0, 8, "Stagnant", text_color=labelColor, text_halign=text.align_left, text_size=size.small)
     table.cell(dashTable, 1, 8, str.tostring(stagnantCount), text_color=labelColor, text_halign=text.align_right, text_size=size.small)
-    table.cell(dashTable, 0, 9, "Total R (Risk/Reward)", text_color=labelColor, text_halign=text.align_left, text_size=size.small)
-    table.cell(dashTable, 1, 9, str.tostring(totalR, "#.##") + "R", text_color=totalTrades == 0 ? labelColor : totalR >= 0 ? posColor : negColor, text_halign=text.align_right, text_size=size.small)
-    table.cell(dashTable, 0, 10, "Gain / Loss ($)", text_color=labelColor, text_halign=text.align_left, text_size=size.small)
-    table.cell(dashTable, 1, 10, str.tostring(gainCash, "#.##"), text_color=gainColor, text_halign=text.align_right, text_size=size.small)
-    table.cell(dashTable, 0, 11, "Gain / Loss (%)", text_color=labelColor, text_halign=text.align_left, text_size=size.small)
-    table.cell(dashTable, 1, 11, str.tostring(gainPct, "#.##") + "%", text_color=gainColor, text_halign=text.align_right, text_size=size.small)
+    table.cell(dashTable, 0, 9, "Restriction (Weekend/Overnight)", text_color=labelColor, text_halign=text.align_left, text_size=size.small)
+    table.cell(dashTable, 1, 9, str.tostring(restrictionCount), text_color=labelColor, text_halign=text.align_right, text_size=size.small)
+    table.cell(dashTable, 0, 10, "Total R (Risk/Reward)", text_color=labelColor, text_halign=text.align_left, text_size=size.small)
+    table.cell(dashTable, 1, 10, str.tostring(totalR, "#.##") + "R", text_color=totalTrades == 0 ? labelColor : totalR >= 0 ? posColor : negColor, text_halign=text.align_right, text_size=size.small)
+    table.cell(dashTable, 0, 11, "Gain / Loss ($)", text_color=labelColor, text_halign=text.align_left, text_size=size.small)
+    table.cell(dashTable, 1, 11, str.tostring(gainCash, "#.##"), text_color=gainColor, text_halign=text.align_right, text_size=size.small)
+    table.cell(dashTable, 0, 12, "Gain / Loss (%)", text_color=labelColor, text_halign=text.align_left, text_size=size.small)
+    table.cell(dashTable, 1, 12, str.tostring(gainPct, "#.##") + "%", text_color=gainColor, text_halign=text.align_right, text_size=size.small)
