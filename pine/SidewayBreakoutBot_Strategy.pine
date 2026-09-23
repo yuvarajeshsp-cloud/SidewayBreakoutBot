@@ -102,6 +102,7 @@ trendTfChoice = input.string("4H", "Trend Timeframe", options=["1H", "4H", "D"],
 trendEmaFast = input.int(50, "Fast EMA Length", minval=1, group=grpTrend)
 trendEmaSlow = input.int(200, "Slow EMA Length", minval=1, group=grpTrend)
 useTrendFlipEntry = input.bool(false, "Allow Breakout On Crossover Bar (Live, Unconfirmed)", group=grpTrend) // the base filter only trusts the trend TF once ITS OWN bar has closed, which can lag a fresh cross by up to a full trend-TF bar (e.g. up to 4 hours on the 4H setting) -- enabling this additionally allows a breakout in the NEW direction the moment the live (still-forming) higher-TF EMA relationship flips, at the cost of a value that can still repaint until that bar actually closes
+showTrendCross = input.bool(true, "Show Trend Cross Markers (Golden/Death Cross)", group=grpTrend) // draws a marker on the CONFIRMED (non-repainting) crossover bar -- bearish (Death Cross) above the bar, bullish (Golden Cross) below -- independent of whether Enable Trend Filter is actually gating entries
 
 grpVis = "Visuals"
 showZone      = input.bool(true, "Show Retracement Zone", group=grpVis)                     // draw the orange box marking the FVG/range retracement zone while waiting for entry
@@ -271,6 +272,13 @@ freshCrossoverBear = trendBearLive and not trendBearConfirmed
 
 trendAllowsLong = not useTrendFilter or trendBullConfirmed or (useTrendFlipEntry and freshCrossoverBull)
 trendAllowsShort = not useTrendFilter or trendBearConfirmed or (useTrendFlipEntry and freshCrossoverBear)
+
+// One-bar pulse the instant the CONFIRMED higher-TF trend flips -- the classic Golden
+// Cross / Death Cross moment (trendBullConfirmed/trendBearConfirmed only change once per
+// trend-TF bar close, so comparing against the previous chart bar's value correctly
+// catches just the single bar the flip lands on).
+trendBullCrossNow = trendBullConfirmed and not trendBullConfirmed[1]
+trendBearCrossNow = trendBearConfirmed and not trendBearConfirmed[1]
 
 // Scans the breakout leg for the nearest FVG; if none is found, falls back to
 // a retracement touch of the sideways zone itself (its high/low). Returns
@@ -1016,6 +1024,11 @@ if freshRange and canArmNewSetup
          slLbl=na, tp1Lbl=na, tp2Lbl=na, tp3Lbl=na, entryInfoLbl=na,
          stopWasHit=false, stagnantClosed=false, fundedClosed=false, flipsUsed=0, entryBar=na, entryTime=na, leftEntry=false, confirmedOutOfSession=false,
          stageLog="State 1: Range locked " + str.tostring(rMin, format.mintick) + " - " + str.tostring(rMax, format.mintick) + " at bar " + str.tostring(n) + " -- watching for a full-body breakout (max " + str.tostring(maxBarsWatch) + " bars)."))
+
+// Golden/Death Cross markers -- bearish above the bar, bullish below, distinct shape/text
+// from the LONG/SHORT ENTRY labels above so the trend regime doesn't get mistaken for a trade.
+plotshape(showTrendCross and trendBullCrossNow, "Golden Cross (Bullish)", shape.diamond, location.belowbar, upCss, text="GX", textcolor=color.white, size=size.tiny)
+plotshape(showTrendCross and trendBearCrossNow, "Death Cross (Bearish)", shape.diamond, location.abovebar, dnCss, text="DX", textcolor=color.white, size=size.tiny)
 
 // ───────────────────────────── Alerts ─────────────────────────────
 // Separate alertcondition() per event so each can be selected individually when
