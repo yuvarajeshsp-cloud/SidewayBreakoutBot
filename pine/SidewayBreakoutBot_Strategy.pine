@@ -96,6 +96,13 @@ overnightBlockBufferMin = input.int(60, "Block New Entries This Many Minutes Bef
 minHoldingMin = input.int(0, "Minimum Holding Time (minutes, 0=off)", minval=0, group=grpFunded)         // only suppresses the stagnation-close above -- never delays a real SL/TP exit, which always fires immediately on real price action
 cooldownAfterLossMin = input.int(0, "Cooldown After a Loss (minutes, 0=off)", minval=0, group=grpFunded) // blocks new entries (including an SL-flip re-entry) for this long after a real SL loss -- not a breakeven stop, a TP close, or a stagnant close
 
+grpTrend = "Trend Filter (50/200 EMA)"
+useTrendFilter = input.bool(false, "Enable Trend Filter", group=grpTrend)     // only takes breakouts in the direction of the higher-timeframe trend (LuxAlgo-style Golden/Death Cross: EMA50 > EMA200 = bullish, EMA50 < EMA200 = bearish) -- a bullish trend allows long breakouts only, a bearish trend allows short breakouts only
+trendTfChoice = input.string("4H", "Trend Timeframe", options=["1H", "4H", "D"], group=grpTrend) // computed on a HIGHER timeframe than the chart, not the chart's own timeframe -- 50/200 EMA on a 1-min chart is only ~3 hours of lookback and far too noisy to represent a real trend
+trendEmaFast = input.int(50, "Fast EMA Length", minval=1, group=grpTrend)
+trendEmaSlow = input.int(200, "Slow EMA Length", minval=1, group=grpTrend)
+useTrendFlipEntry = input.bool(false, "Allow Breakout On Crossover Bar (Live, Unconfirmed)", group=grpTrend) // the base filter only trusts the trend TF once ITS OWN bar has closed, which can lag a fresh cross by up to a full trend-TF bar (e.g. up to 4 hours on the 4H setting) -- enabling this additionally allows a breakout in the NEW direction the moment the live (still-forming) higher-TF EMA relationship flips, at the cost of a value that can still repaint until that bar actually closes
+
 grpVis = "Visuals"
 showZone      = input.bool(true, "Show Retracement Zone", group=grpVis)                     // draw the orange box marking the FVG/range retracement zone while waiting for entry
 showLevels    = input.bool(true, "Show Entry/SL/TP Levels", group=grpVis)                    // draw the SL/TP lines once a trade is open
@@ -232,6 +239,31 @@ fundedCooldownActive = cooldownAfterLossMin > 0 and not na(lastLossTime) and (ti
 // dropped outright, since most of these restrictions are temporary (news window closes,
 // cooldown expires, tomorrow's daily limit resets).
 fundedBlockEntry = dailyLossBreached or dailyProfitBreached or inNewsBlackout or weekendBlockNewEntries or overnightBlockNewEntries or fundedCooldownActive
+
+// ───────────────────────────── Trend filter (50/200 EMA, higher timeframe) ─────────────────────────────
+// Two request.security() reads of the same higher-TF EMA pair: a CONFIRMED one (the
+// standard barstate.isrealtime ? [1] : [0] trick -- never repaints, but only updates once
+// the trend-TF bar itself closes, so a fresh cross can lag up to a full trend-TF bar), and
+// a LIVE one (the trend-TF bar's still-forming value -- reacts immediately, but can repaint
+// until that bar closes). Both are cheap: request.security is only ever called with these
+// fixed expressions, never inside a loop.
+trendTf = trendTfChoice == "1H" ? "60" : trendTfChoice == "4H" ? "240" : "D"
+[trendEma50Confirmed, trendEma200Confirmed] = request.security(syminfo.tickerid, trendTf, [ta.ema(close, trendEmaFast)[barstate.isrealtime ? 1 : 0], ta.ema(close, trendEmaSlow)[barstate.isrealtime ? 1 : 0]], lookahead=barmerge.lookahead_off)
+[trendEma50Live, trendEma200Live] = request.security(syminfo.tickerid, trendTf, [ta.ema(close, trendEmaFast), ta.ema(close, trendEmaSlow)], lookahead=barmerge.lookahead_off)
+
+trendBullConfirmed = trendEma50Confirmed > trendEma200Confirmed
+trendBearConfirmed = trendEma50Confirmed < trendEma200Confirmed
+trendBullLive = trendEma50Live > trendEma200Live
+trendBearLive = trendEma50Live < trendEma200Live
+
+// A "fresh crossover" is the live trend-TF state disagreeing with the still-lagging
+// confirmed one -- i.e. the higher-TF trend has already flipped intrabar, but the safe
+// read won't reflect that until the trend-TF bar closes.
+freshCrossoverBull = trendBullLive and not trendBullConfirmed
+freshCrossoverBear = trendBearLive and not trendBearConfirmed
+
+trendAllowsLong = not useTrendFilter or trendBullConfirmed or (useTrendFlipEntry and freshCrossoverBull)
+trendAllowsShort = not useTrendFilter or trendBearConfirmed or (useTrendFlipEntry and freshCrossoverBear)
 
 // Scans the breakout leg for the nearest FVG; if none is found, falls back to
 // a retracement touch of the sideways zone itself (its high/low). Returns
@@ -575,9 +607,13 @@ if numSetups > 0
             bodySize = math.abs(close - open)
             passesBody = not useBodyFilter or bodySize >= bodyATRMult * atrVal
             // "Full-body" breakout: BOTH the open and close must clear the range, not
-            // just a wick -- a single long shadow poking through doesn't count.
-            bullBreak = math.min(open, close) > s.lockedHigh and passesBody
-            bearBreak = math.max(open, close) < s.lockedLow and passesBody
+            // just a wick -- a single long shadow poking through doesn't count. rawBull/
+            // rawBearBreak are the price-only condition; trendAllowsLong/Short (see the
+            // Trend Filter block above) then gates which direction actually counts.
+            rawBullBreak = math.min(open, close) > s.lockedHigh and passesBody
+            rawBearBreak = math.max(open, close) < s.lockedLow and passesBody
+            bullBreak = rawBullBreak and trendAllowsLong
+            bearBreak = rawBearBreak and trendAllowsShort
 
             if bullBreak or bearBreak
                 s.dir := bullBreak ? 1 : -1
@@ -614,6 +650,11 @@ if numSetups > 0
                         s.zoneBox := box.new(bar_index, s.zoneHigh, bar_index, s.zoneLow, border_color=color.orange, bgcolor=color.new(color.orange, 85))
                     s.stageLog := s.stageLog + "\nState 1: " + (bullBreak ? "Bullish" : "Bearish") + " full-body breakout at bar " + str.tostring(bar_index) + " (close " + str.tostring(close, format.mintick) + "), fakeout filter off -> zone identified directly (State 2), zone " + str.tostring(zL, format.mintick) + " - " + str.tostring(zH, format.mintick) + "."
                     alert("Sideway Breakout Bot: " + (s.dir == 1 ? "bullish" : "bearish") + " breakout confirmed, zone identified", alert.freq_once_per_bar_close)
+            else if (rawBullBreak or rawBearBreak) and useTrendFilter
+                // A real full-body breakout formed but the trend filter blocked its
+                // direction -- log it (without transitioning state, still watching) so
+                // it's visible on hover instead of silently vanishing.
+                s.stageLog := s.stageLog + "\nState 1: " + (rawBullBreak ? "Bullish" : "Bearish") + " full-body breakout at bar " + str.tostring(bar_index) + " (close " + str.tostring(close, format.mintick) + ") blocked by the trend filter (" + trendTfChoice + " trend is " + (rawBullBreak ? "bearish" : "bullish") + ") -- still watching."
             else if bar_index - s.lockBar > maxBarsWatch
                 // No breakout for too long -- give up on this range entirely.
                 s.stageLog := s.stageLog + "\nState 1: No breakout within " + str.tostring(maxBarsWatch) + " bars (bar " + str.tostring(s.lockBar) + " to " + str.tostring(bar_index) + ") -> setup dropped."
