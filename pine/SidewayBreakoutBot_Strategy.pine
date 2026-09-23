@@ -244,7 +244,6 @@ type Setup
     int    breakoutBar   // bar index of the initial breakout candle (anchors the touchedZone backfill in STATE 4 -- must NOT be lockBar, which predates the whole state-1 watching period)
     bool   isImpulse     // true if this setup entered via the impulse-breakout path (skipped the fakeout/retracement wait)
     float  impulsePct    // % of the range's height the breakout candle's body closed beyond the boundary (only meaningful when isImpulse)
-    float  preBreakoutLevel  // high/low of the candle immediately before the breakout candle -- one of two impulse-entry SL candidates (see STATE 5)
     float  zoneHigh      // top of the retracement target zone (FVG or range fallback)
     float  zoneLow       // bottom of the retracement target zone
     bool   touchedZone   // true once price has traded into the zone at least once
@@ -343,7 +342,7 @@ if numSetups > 0
                     // OPPOSITE direction, starting fresh from state 1.
                     if s.flipsUsed < maxSlFlips
                         array.push(setups, Setup.new(state=1, lockedHigh=s.lockedHigh, lockedLow=s.lockedLow, lockBar=bar_index, dir=0, breakoutTime=na, breakoutBar=na,
-                             isImpulse=false, impulsePct=na, preBreakoutLevel=na,
+                             isImpulse=false, impulsePct=na,
                              zoneHigh=na, zoneLow=na, touchedZone=false, slPrice=na, entryPrice=na,
                              tp1Price=na, tp2Price=na, tp3Price=na, tp1Filled=false, tp2Filled=false, qtyAtEntry=na, entryId=na,
                              zoneBox=na, riskBands=array.new<box>(), rewardBands=array.new<box>(),
@@ -501,11 +500,6 @@ if numSetups > 0
                 if isImpulse
                     s.isImpulse := true
                     s.impulsePct := breakoutDist / rangeHeight * 100
-                    // Precompute the impulse-entry SL level now, right at the breakout
-                    // bar: the wick (low for a long, high for a short) of the single
-                    // candle right before this breakout candle -- the base of the
-                    // impulse move.
-                    s.preBreakoutLevel := s.dir == 1 ? low[1] : high[1]
                     s.state := 5
                     s.stageLog := s.stageLog + "\nState 1: " + (bullBreak ? "Bullish" : "Bearish") + " full-body breakout at bar " + str.tostring(bar_index) + " (close " + str.tostring(close, format.mintick) + "), body " + str.tostring(s.impulsePct, "#.#") + "% beyond range -> impulse detected, entering next candle (State 5)."
                     alert("Sideway Breakout Bot: " + (bullBreak ? "bullish" : "bearish") + " impulse breakout (" + str.tostring(s.impulsePct, "#.#") + "% beyond range), entering next candle", alert.freq_once_per_bar_close)
@@ -589,11 +583,13 @@ if numSetups > 0
             else if inSession
                 // ---- Entry! entryPrice is this candle's open (the very next candle
                 // after the impulse breakout candle) instead of a confirmed retracement
-                // close. The SL sits just beyond the wick of the candle right before
-                // the breakout candle (the base of the impulse move). ----
+                // close. The SL sits just beyond the far side of the locked range
+                // (same reference STATE 2 uses), not the pre-breakout candle's wick --
+                // that wick sits too close to price for an impulse move and got clipped
+                // by ordinary noise. ----
                 s.entryPrice := open
                 buffer = slBufferATRMult * atrVal
-                s.slPrice := s.dir == 1 ? s.preBreakoutLevel - buffer : s.preBreakoutLevel + buffer
+                s.slPrice := s.dir == 1 ? s.lockedLow - buffer : s.lockedHigh + buffer
                 r = math.abs(s.entryPrice - s.slPrice)
                 s.tp1Price := s.dir == 1 ? s.entryPrice + r * tp1R : s.entryPrice - r * tp1R
                 s.tp2Price := s.dir == 1 ? s.entryPrice + r * tp2R : s.entryPrice - r * tp2R
@@ -660,7 +656,7 @@ if numSetups > 0
                     tpList5 = "TP1 " + str.tostring(s.tp1Price, format.mintick) +
                          (numTPs >= 2 ? ", TP2 " + str.tostring(s.tp2Price, format.mintick) : "") +
                          (numTPs >= 3 ? ", TP3 " + str.tostring(s.tp3Price, format.mintick) : "")
-                    s.stageLog := s.stageLog + "\nState 5: Entered " + (s.dir == 1 ? "LONG" : "SHORT") + " at " + str.tostring(s.entryPrice, format.mintick) + " (this candle's open, " + str.tostring(bar_index - s.breakoutBar) + " bar(s) after the breakout), SL " + str.tostring(s.slPrice, format.mintick) + " (pre-breakout candle " + (s.dir == 1 ? "low" : "high") + " +/- buffer), " + tpList5 + ", risk 1R = " + str.tostring(r, format.mintick) + ", qty " + str.tostring(qtyToTrade, "#.####") + " (" + str.tostring(riskPercent) + "% risk) -> in trade (State 3)." + (s.flipsUsed > 0 ? " [flip #" + str.tostring(s.flipsUsed) + " after a prior SL]" : "")
+                    s.stageLog := s.stageLog + "\nState 5: Entered " + (s.dir == 1 ? "LONG" : "SHORT") + " at " + str.tostring(s.entryPrice, format.mintick) + " (this candle's open, " + str.tostring(bar_index - s.breakoutBar) + " bar(s) after the breakout), SL " + str.tostring(s.slPrice, format.mintick) + " (range " + (s.dir == 1 ? "low" : "high") + " +/- buffer), " + tpList5 + ", risk 1R = " + str.tostring(r, format.mintick) + ", qty " + str.tostring(qtyToTrade, "#.####") + " (" + str.tostring(riskPercent) + "% risk) -> in trade (State 3)." + (s.flipsUsed > 0 ? " [flip #" + str.tostring(s.flipsUsed) + " after a prior SL]" : "")
                     s.entryInfoLbl := label.new(bar_index, high + iLblOffset, "i", style=label.style_label_down, color=color.new(color.blue, 0), textcolor=color.white, size=size.small, tooltip=s.stageLog)
                     alert("Sideway Breakout Bot: " + (s.dir == 1 ? "LONG" : "SHORT") + " entry triggered", alert.freq_once_per_bar_close)
                 else
@@ -865,7 +861,7 @@ if numSetups > 0
 canArmNewSetup = allowStackedEntries ? array.size(setups) < maxConcurrentSetups : array.size(setups) == 0
 if freshRange and canArmNewSetup
     array.push(setups, Setup.new(state=1, lockedHigh=rMax, lockedLow=rMin, lockBar=n, dir=0, breakoutTime=na, breakoutBar=na,
-         isImpulse=false, impulsePct=na, preBreakoutLevel=na,
+         isImpulse=false, impulsePct=na,
          zoneHigh=na, zoneLow=na, touchedZone=false, slPrice=na, entryPrice=na,
          tp1Price=na, tp2Price=na, tp3Price=na, tp1Filled=false, tp2Filled=false, qtyAtEntry=na, entryId=na,
          zoneBox=na, riskBands=array.new<box>(), rewardBands=array.new<box>(),
