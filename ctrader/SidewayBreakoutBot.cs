@@ -283,9 +283,8 @@ namespace cAlgo.Robots
             public bool ConfirmedOutOfSession;
             public string PositionLabel; // null unless a real position was opened for this setup
             public double QtyAtEntryUnits;
-            public string RangeBoxName; // the range box this setup is watching (for drop-on-invalidate cleanup is NOT done -- range boxes persist as chart history)
             public string ZoneBoxName;
-            public string EntryLineName, SlLineName, Tp1LineName, Tp2LineName, Tp3LineName, InfoTextName;
+            public string EntryLineName, SlLineName, Tp1LineName, Tp2LineName, Tp3LineName;
         }
 
         // Funded-account tracking
