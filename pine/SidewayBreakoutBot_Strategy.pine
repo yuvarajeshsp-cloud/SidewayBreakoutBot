@@ -84,13 +84,11 @@ useNewsBlackout = input.bool(false, "Enable News Blackout Windows", group=grpFun
 newsBlackoutWindows = input.session("0000-0001", "News Blackout Windows (comma-separated HHMM-HHMM)", group=grpFunded) // Pine has no live economic calendar -- maintain this manually before known high-impact releases (NFP, FOMC, CPI), e.g. "0825-0855,1315-1345". Blocks new entries only; never affects an already-open trade. Default is a negligible 1-minute placeholder -- replace it before enabling
 
 useWeekendRestriction = input.bool(false, "Weekend Holding Restriction", group=grpFunded)
-weekendCutoffHour = input.int(21, "Weekend Cutoff Hour (Friday, Session Timezone)", minval=0, maxval=23, group=grpFunded)
-weekendCutoffMinute = input.int(0, "Weekend Cutoff Minute", minval=0, maxval=59, group=grpFunded)
+weekendCutoffSession = input.session("2100-2101", "Weekend Cutoff Time (Friday, Session Timezone)", group=grpFunded) // clock-style time picker -- only the window's START time is read as the actual cutoff, the end time is ignored (Pine has no dedicated single-time input)
 weekendBlockBufferMin = input.int(60, "Block New Entries This Many Minutes Before Cutoff", minval=0, group=grpFunded)
 
 useOvernightRestriction = input.bool(false, "Overnight Holding Restriction", group=grpFunded)
-overnightCutoffHour = input.int(21, "Overnight Cutoff Hour (Daily, Session Timezone)", minval=0, maxval=23, group=grpFunded)
-overnightCutoffMinute = input.int(0, "Overnight Cutoff Minute", minval=0, maxval=59, group=grpFunded)
+overnightCutoffSession = input.session("2100-2101", "Overnight Cutoff Time (Daily, Session Timezone)", group=grpFunded) // clock-style time picker -- only the window's START time is read as the actual cutoff, the end time is ignored
 overnightBlockBufferMin = input.int(60, "Block New Entries This Many Minutes Before Cutoff", minval=0, group=grpFunded)
 
 minHoldingMin = input.int(0, "Minimum Holding Time (minutes, 0=off)", minval=0, group=grpFunded)         // only suppresses the stagnation-close above -- never delays a real SL/TP exit, which always fires immediately on real price action
@@ -220,11 +218,13 @@ fundedIsFriday = fundedDow == dayofweek.friday
 // (forex/CFDs), no bars exist then anyway so this branch never evaluates. Without it,
 // checking Friday alone would let the restriction silently switch back off on Sat/Sun.
 fundedIsWeekendDay = fundedDow == dayofweek.saturday or fundedDow == dayofweek.sunday
-weekendCutoffMinutesOfDay = weekendCutoffHour * 60 + weekendCutoffMinute
+// input.session() always yields "HHMM-HHMM" -- pull the hour/minute out of the START
+// half only, since these two fields are used purely as a single clock-time picker.
+weekendCutoffMinutesOfDay = int(str.tonumber(str.substring(weekendCutoffSession, 0, 2))) * 60 + int(str.tonumber(str.substring(weekendCutoffSession, 2, 4)))
 weekendPastCutoff = useWeekendRestriction and (fundedIsWeekendDay or (fundedIsFriday and fundedCurMinutesOfDay >= weekendCutoffMinutesOfDay))
 weekendBlockNewEntries = useWeekendRestriction and (fundedIsWeekendDay or (fundedIsFriday and fundedCurMinutesOfDay >= (weekendCutoffMinutesOfDay - weekendBlockBufferMin)))
 
-overnightCutoffMinutesOfDay = overnightCutoffHour * 60 + overnightCutoffMinute
+overnightCutoffMinutesOfDay = int(str.tonumber(str.substring(overnightCutoffSession, 0, 2))) * 60 + int(str.tonumber(str.substring(overnightCutoffSession, 2, 4)))
 overnightPastCutoff = useOvernightRestriction and fundedCurMinutesOfDay >= overnightCutoffMinutesOfDay
 overnightBlockNewEntries = useOvernightRestriction and fundedCurMinutesOfDay >= (overnightCutoffMinutesOfDay - overnightBlockBufferMin)
 
