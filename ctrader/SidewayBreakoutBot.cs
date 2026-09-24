@@ -302,8 +302,8 @@ namespace cAlgo.Robots
 
         protected override void OnStart()
         {
-            _rangeAtr = Indicators.AverageTrueRange(RangeAtrLen, MovingAverageType.Wilders);
-            _filterAtr = Indicators.AverageTrueRange(AtrLength, MovingAverageType.Wilders);
+            _rangeAtr = Indicators.AverageTrueRange(RangeAtrLen, MovingAverageType.WilderSmoothing);
+            _filterAtr = Indicators.AverageTrueRange(AtrLength, MovingAverageType.WilderSmoothing);
             _sma = Indicators.SimpleMovingAverage(Bars.ClosePrices, RangeLength);
 
             _sessionStart = ParseTimeOfDay(SessionStartStr, new TimeSpan(10, 0, 0));
