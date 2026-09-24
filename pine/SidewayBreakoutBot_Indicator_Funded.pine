@@ -2,7 +2,7 @@
 // Licensed under CC BY-NC-SA 4.0: https://creativecommons.org/licenses/by-nc-sa/4.0/
 // © LuxAlgo
 //@version=6
-indicator("Sideway Breakout Bot [Indicator]", overlay=true, max_boxes_count=500, max_lines_count=500, max_labels_count=500)
+indicator("Sideway Breakout Bot [Indicator - Funded]", overlay=true, max_boxes_count=500, max_lines_count=500, max_labels_count=500)
 
 // ───────────────────────────── Inputs ─────────────────────────────
 grpRange = "Range Detector"
