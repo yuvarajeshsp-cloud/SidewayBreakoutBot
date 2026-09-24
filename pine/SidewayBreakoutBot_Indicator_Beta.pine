@@ -711,13 +711,13 @@ if numSetups > 0
             zoneStart = s.dir == 1 ? s.zoneHigh : s.zoneLow
             touched = s.dir == 1 ? low <= zoneStart : high >= zoneStart
 
-            // Sticky, diagnostic-only: remembers a touch that arrived while blocked by
-            // the session filter or a funded-account rule, purely so the eventual
-            // timeout tooltip can say so specifically. The actual entry check below
-            // always uses the LIVE `touched` value above, never this sticky one, so a
-            // stale touch from price that has since moved away can never trigger a
-            // late entry at the wrong level once the block clears.
-            if touched and (not inSession or fundedBlockEntry)
+            // Sticky, diagnostic-only: remembers a touch that arrived while outside the
+            // session filter, purely so the eventual timeout tooltip can say so
+            // specifically. The actual entry check below always uses the LIVE `touched`
+            // value above, never this sticky one, so a stale touch from price that has
+            // since moved away can never trigger a late entry at the wrong level once
+            // the session opens.
+            if touched and not inSession
                 s.confirmedOutOfSession := true
 
             invalidated = s.dir == 1 ? low < s.lockedLow : high > s.lockedHigh
@@ -726,7 +726,7 @@ if numSetups > 0
             // No barstate.isconfirmed gate here -- unlike the confirmation-candle
             // design, Beta enters the instant price touches the zone, live, without
             // waiting for this candle to close.
-            if touched and inSession and not fundedBlockEntry
+            if touched and inSession
                 // ---- Entry! Compute SL/TP levels and open the (simulated) trade. ----
                 // Entry price is the zone level itself (the exact price being touched),
                 // not this (possibly still-forming) candle's close.
@@ -831,8 +831,8 @@ if numSetups > 0
                 // barstate.isconfirmed since these two conditions are meant to end a
                 // stale setup, not react live the way the touch/entry check above
                 // deliberately does.
-                s.stageLog := s.stageLog + "\nState 2: " + (invalidated ? ("Price fully reversed back through the far side of the range" + (s.confirmedOutOfSession ? " after touching the zone but before the entry could execute (blocked outside session or by a funded-account rule)." : " without ever touching the zone.")) :
-                     s.confirmedOutOfSession ? ("Retracement timeout (" + str.tostring(retraceTimeoutMin) + " min) exceeded -- the zone WAS touched, but only while outside the trading session window or blocked by a funded-account rule, so it wasn't acted on.") :
+                s.stageLog := s.stageLog + "\nState 2: " + (invalidated ? ("Price fully reversed back through the far side of the range" + (s.confirmedOutOfSession ? " after touching the zone but before the entry could execute (outside the trading session window)." : " without ever touching the zone.")) :
+                     s.confirmedOutOfSession ? ("Retracement timeout (" + str.tostring(retraceTimeoutMin) + " min) exceeded -- the zone WAS touched, but only while outside the trading session window (" + sessionWindow + "), so it wasn't acted on.") :
                      ("Retracement timeout (" + str.tostring(retraceTimeoutMin) + " min) exceeded -- price never reached the zone " + str.tostring(s.zoneLow, format.mintick) + " - " + str.tostring(s.zoneHigh, format.mintick) + ".")) + " -> setup dropped."
                 label.new(bar_index, high + iLblOffset, "i", style=label.style_label_down, color=color.new(color.gray, 0), textcolor=color.white, size=size.small, tooltip=s.stageLog)
                 if not na(s.zoneBox)
