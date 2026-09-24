@@ -33,6 +33,7 @@ grpZone = "Retracement Zone"
 zoneScanMaxBars  = input.int(15, "Zone Scan Lookback (bars)", minval=3, group=grpZone)       // how far back (from the breakout) to search for a Fair Value Gap
 fvgMinATRMult    = input.float(0.0, "Min FVG Size (x ATR)", minval=0, group=grpZone)         // ignore FVGs smaller than this (in ATR) as noise
 retraceTimeoutMin = input.int(30, "Retracement Timeout (minutes)", minval=1, group=grpZone)  // give up waiting for the retracement/entry after this many real minutes
+useZoneConfirmation = input.bool(true, "Require Confirmation Candle Before Entry", group=grpZone) // off = enter the instant price touches the zone (at that candle's close), skipping the wait for a candle that also closes back beyond the zone's near edge -- faster, but takes every touch instead of only ones the market itself confirms
 
 grpRisk = "Risk Management"
 slBufferATRMult = input.float(0.3, "SL Buffer (x ATR)", minval=0, group=grpRisk)             // extra cushion (in ATR) added beyond the opposite range boundary for the stop-loss -- widened from 0.1 for 1-min, where that thin a buffer left stops prone to getting clipped by ordinary noise/spread
@@ -823,10 +824,13 @@ if numSetups > 0
             // above used (zoneStart -- the FVG's own edge, or the range's own boundary
             // when falling back to the range), in the SAME direction as the original
             // breakout (i.e. the pullback is over). No midpoint requirement -- touch and
-            // confirmation both react to the zone's near edge.
+            // confirmation both react to the zone's near edge. When useZoneConfirmation
+            // is off, the touch alone is enough -- entry fires on the very candle that
+            // reaches the zone, at its close, instead of waiting for a candle that also
+            // happens to close back beyond the edge (which can take many bars).
             confirmBull = close > open and close > zoneStart
             confirmBear = close < open and close < zoneStart
-            confirmation = s.touchedZone and (s.dir == 1 ? confirmBull : confirmBear)
+            confirmation = s.touchedZone and (not useZoneConfirmation or (s.dir == 1 ? confirmBull : confirmBear))
 
             // Invalidated = price fully reversed back through the FAR side of the range
             // (not just a shallow pullback) -- the whole idea has failed. Checked against

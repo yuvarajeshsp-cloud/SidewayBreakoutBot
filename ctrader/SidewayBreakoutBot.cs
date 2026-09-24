@@ -98,6 +98,9 @@ namespace cAlgo.Robots
         [Parameter("Retracement Timeout (minutes)", DefaultValue = 30, MinValue = 1, Group = "Retracement Zone")]
         public int RetraceTimeoutMin { get; set; }
 
+        [Parameter("Require Confirmation Candle Before Entry", DefaultValue = true, Group = "Retracement Zone")]
+        public bool UseZoneConfirmation { get; set; }
+
         #endregion
 
         #region Parameters -- Risk / Take Profit
@@ -721,7 +724,11 @@ namespace cAlgo.Robots
 
             bool confirmBull = close > open && close > zoneStart;
             bool confirmBear = close < open && close < zoneStart;
-            bool confirmation = s.TouchedZone && (s.Dir == 1 ? confirmBull : confirmBear);
+            // When UseZoneConfirmation is off, the touch alone is enough -- entry fires
+            // on the very candle that reaches the zone, at its close, instead of waiting
+            // for a candle that also happens to close back beyond the edge (which can
+            // take many bars).
+            bool confirmation = s.TouchedZone && (!UseZoneConfirmation || (s.Dir == 1 ? confirmBull : confirmBear));
 
             bool invalidated = s.Dir == 1 ? low < s.LockedLow : high > s.LockedHigh;
             double minutesSince = (barTime - s.BreakoutTime).TotalMinutes;
