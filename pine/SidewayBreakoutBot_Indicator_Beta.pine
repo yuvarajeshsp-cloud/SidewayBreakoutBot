@@ -576,17 +576,6 @@ if numSetups > 0
                     // change this variant makes.
                     s.zoneHigh := s.lockedHigh
                     s.zoneLow := s.lockedLow
-                    // The scanned leg spans the original breakout candle through this
-                    // confirmation candle (breakoutBar, NOT lockBar -- lockBar predates the
-                    // entire state-1 watching period, during which price was still inside
-                    // the range by definition, which would trivially backfill touchedZone
-                    // true from stale pre-breakout price action rather than a genuine
-                    // post-breakout pullback), so it can include a pullback that already
-                    // reached the zone -- seed touchedZone from that history instead of
-                    // always starting at false.
-                    scanLen2 = math.max(math.min(bar_index - s.breakoutBar + 1, zoneScanMaxBars), 1)
-                    zoneStart2 = s.dir == 1 ? s.zoneHigh : s.zoneLow
-                    s.touchedZone := s.dir == 1 ? ta.lowest(low, scanLen2) <= zoneStart2 : ta.highest(high, scanLen2) >= zoneStart2
                     s.state := 2
                     if showZone
                         s.zoneBox := box.new(bar_index, s.zoneHigh, bar_index, s.zoneLow, border_color=color.orange, bgcolor=color.new(color.orange, 85))
