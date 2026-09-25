@@ -5,28 +5,63 @@ automatically. Three pieces, all running on the **same Windows machine/VPS**
 as your MT5 terminal:
 
 1. **TradingView** — the Signal indicator's `alert()` calls carry JSON.
-2. **This bridge** (`webhook_bridge.py`) — a tiny local web server that
-   receives TradingView's webhook and drops each signal as its own file.
+2. **The bridge** — a tiny local web server that receives TradingView's
+   webhook and drops each signal as its own file. Two ways to run it (both
+   share the exact same webhook logic in `bridge_core.py`):
+   - `webhook_bridge.py` — plain console/headless, prints a log line per event.
+   - `bridge_app.py` — **Windows desktop app**: a window with a live table of
+     every signal received (time, action, group ID, leg, symbol, dir,
+     entry/SL/TP, accepted/rejected/ignored), plus a permanent
+     `signal_log.csv` next to the script so history survives restarts and
+     opens straight in Excel.
 3. **The EA** (`mt5/SidewayBreakoutBotSignalEA.mq5`) — polls that folder and
    places/modifies/closes the real orders.
 
 ## 1. Install and run the bridge
 
-On the Windows VPS (needs Python 3.9+):
+On the Windows VPS (needs Python 3.9+ from python.org — that installer
+bundles Tk, which the desktop app needs):
 
 ```
 cd bridge
 pip install -r requirements.txt
+```
+
+### Option A — desktop app (recommended)
+
+```
+python bridge_app.py
+```
+
+A window opens with fields for **Shared Secret** (must match the Pine
+indicator's input — click "Apply Secret" after changing it, no restart
+needed) and **Port** (needs a restart to change), plus the live signal
+table. Settings are remembered in `bridge_app_config.json` next to the
+script for next time.
+
+To run it with no console window in the background, launch it with
+`pythonw` instead of `python`:
+```
+pythonw bridge_app.py
+```
+To make it a proper standalone `.exe` (no Python install needed on the
+VPS at all), see "Building a standalone .exe" below.
+
+### Option B — console/headless
+
+```
 set BRIDGE_SECRET=pick-your-own-private-value
 python webhook_bridge.py
 ```
 
-Leave it running (use Task Scheduler, NSSM, or just a background window — a
-crashed/stopped bridge just means no new signals get queued; nothing about
-your MT5 terminal or open trades depends on it staying up).
+Leave whichever one you pick running (use Task Scheduler, NSSM, or just a
+background window/app — a crashed/stopped bridge just means no new signals
+get queued; nothing about your MT5 terminal or open trades depends on it
+staying up).
 
 It defaults to writing signals into:
 `%APPDATA%\MetaQuotes\Terminal\Common\Files\SidewayBreakoutBot\pending`
+(the desktop app shows/lets you override this path directly in its window).
 
 That's the **Common** Files folder shared by every MT5 terminal installed
 under this Windows user account, not a specific terminal's own data folder —
@@ -65,6 +100,25 @@ you don't need to know the terminal's hashed folder name.
      that isn't valid JSON, so you don't need a second, more specific alert.
 4. Make sure port 5000 (or whatever `BRIDGE_PORT` you set) is open in the
    VPS's firewall/security group.
+
+Before waiting on a real market signal, click **"Send Test Signal"** in the
+desktop app (or POST a fake payload if using the console version — see the
+testing steps you already have) to confirm a row appears in the table/CSV
+and the EA logs it.
+
+## Building a standalone .exe (optional)
+
+If you'd rather not have Python installed on the trading VPS at all:
+
+```
+pip install pyinstaller
+pyinstaller --onefile --windowed --name SidewayBreakoutBotBridge bridge_app.py
+```
+
+The `.exe` lands in `bridge/dist/SidewayBreakoutBotBridge.exe` — copy just
+that one file to the VPS and run it directly, no Python required there.
+`--windowed` suppresses the console window (same effect as `pythonw`
+above). Rebuild it any time you change `bridge_app.py` or `bridge_core.py`.
 
 ## What gets automated vs. what doesn't
 

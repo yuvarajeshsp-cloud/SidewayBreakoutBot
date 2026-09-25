@@ -1,2 +1,7 @@
 __pycache__/
 *.pyc
+bridge/bridge_app_config.json
+bridge/signal_log.csv
+bridge/build/
+bridge/dist/
+bridge/*.spec
