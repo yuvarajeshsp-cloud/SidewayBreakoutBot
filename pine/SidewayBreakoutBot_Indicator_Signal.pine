@@ -126,6 +126,23 @@ var int   rOs  = 0    // 0 = still inside the range, 1 = broke up, -1 = broke do
 color detect_css = na
 
 n = bar_index
+// True on the first bar of a new exchange/chart calendar day. Drives "clear
+// yesterday's visuals" below -- both this range box/line and, further down where
+// the per-setup drawings live, every box/line/label any still-tracked setup is
+// holding. ta.change() returns na (falsy in an `if`) on the very first bar, so
+// nothing fires before a previous day actually exists to roll over from.
+isNewDay = ta.change(time("D")) != 0
+
+if isNewDay
+    // Yesterday's box/line are done -- drop them so today starts clean instead of
+    // carrying a stale drawing across the day boundary.
+    if not na(bx)
+        box.delete(bx)
+    if not na(lvl)
+        line.delete(lvl)
+    bx := na
+    lvl := na
+
 rAtr = ta.atr(rangeAtrLen) * rangeMult   // how far price may wander from the SMA and still count as "sideways"
 ma = ta.sma(close, rangeLength)
 
@@ -137,6 +154,13 @@ for i = 0 to rangeLength - 1
     rCount += math.abs(close[i] - ma) > rAtr ? 1 : 0
 
 rangeEvent = rCount == 0 and rCount[1] != rCount
+// Day rollover above may have just deleted bx/lvl while the SAME range is still
+// unbroken (rCount already 0, no fresh transition this bar) -- without this,
+// nothing would recreate the box until the next genuine rangeEvent. This only
+// redraws the visual; it deliberately does NOT set freshRange, since the
+// underlying consolidation hasn't actually changed and a setup already watching
+// it from before midnight is still watching the same boundaries.
+forceBoxRedraw = isNewDay and rCount == 0 and not rangeEvent
 
 // True only when this rangeEvent is a genuinely NEW range (a fresh box below), not
 // just a re-extension of one still being watched -- rCount can flicker back to 0
@@ -147,8 +171,10 @@ rangeEvent = rCount == 0 and rCount[1] != rCount
 freshRange = false
 if rangeEvent
     // If the new range overlaps the box still being drawn from a previous range,
-    // just stretch that same box/line to cover both instead of starting a new one.
-    if n[rangeLength] <= bx.get_right()
+    // just stretch that same box/line to cover both instead of starting a new one
+    // (bx may be na right now from the day-rollover delete above, in which case
+    // there's nothing to stretch -- fall straight to drawing a fresh one).
+    if not na(bx) and n[rangeLength] <= bx.get_right()
         rMax := math.max(ma + rAtr, bx.get_top())
         rMin := math.min(ma - rAtr, bx.get_bottom())
         bx.set_top(rMax)
@@ -167,20 +193,30 @@ if rangeEvent
         detect_css := color.new(color.gray, 80)
         rOs := 0
         freshRange := true
+else if forceBoxRedraw
+    rMax := ma + rAtr
+    rMin := ma - rAtr
+    bx := box.new(n, rMax, n, rMin, na, bgcolor=color.new(unbrokenCss, 80))
+    lvl := line.new(n, ma, n, ma, color=unbrokenCss, style=line.style_dotted)
+    detect_css := color.new(color.gray, 80)
+    rOs := 0
 else if rCount == 0
     // Range is still intact (no new event) -- just keep extending the box rightward.
     bx.set_right(n)
     lvl.set_x2(n)
 
 // Recolor the box/line once price closes outside it, purely for visual reference.
-if close > bx.get_top()
-    bx.set_bgcolor(color.new(upCss, 80))
-    lvl.set_color(upCss)
-    rOs := 1
-else if close < bx.get_bottom()
-    bx.set_bgcolor(color.new(dnCss, 80))
-    lvl.set_color(dnCss)
-    rOs := -1
+// Guarded against na -- bx/lvl can still be na here if today hasn't had a range
+// event yet (nothing to recolor until one actually draws a box).
+if not na(bx)
+    if close > bx.get_top()
+        bx.set_bgcolor(color.new(upCss, 80))
+        lvl.set_color(upCss)
+        rOs := 1
+    else if close < bx.get_bottom()
+        bx.set_bgcolor(color.new(dnCss, 80))
+        lvl.set_color(dnCss)
+        rOs := -1
 
 bgcolor(detect_css)
 plot(rMax, "Range Top", rMax != rMax[1] ? na : rOs == 0 ? unbrokenCss : rOs == 1 ? upCss : dnCss)
@@ -367,11 +403,18 @@ var array<Setup> setups = array.new<Setup>()
 // TradingView's 500-object hard caps to evict them later. The fixed historical
 // markers (slLbl/tp1Lbl/.../entryInfoLbl) are intentionally left alone -- those are
 // meant to be a permanent record on the chart, same as the dashboard's tradeHistory.
+// Also used (together with f_drawTradeVisuals below) to redraw a still-open trade's
+// visuals fresh at day rollover -- so every field is cleared to na/empty here, not
+// just deleted, since a setup that survives this call keeps using these same fields
+// on later bars (the per-bar extend-while-in-trade code below only skips them while
+// riskBands is empty, and calling a set_ method on an already-deleted id errors).
 f_deleteTradeVisuals(s) =>
     for b in s.riskBands
         box.delete(b)
     for b in s.rewardBands
         box.delete(b)
+    array.clear(s.riskBands)
+    array.clear(s.rewardBands)
     line.delete(s.entryLine)
     line.delete(s.slLine)
     line.delete(s.tp1Line)
@@ -382,6 +425,63 @@ f_deleteTradeVisuals(s) =>
     label.delete(s.tp1Tag)
     label.delete(s.tp2Tag)
     label.delete(s.tp3Tag)
+    s.entryLine := na
+    s.slLine := na
+    s.tp1Line := na
+    s.tp2Line := na
+    s.tp3Line := na
+    s.entryTag := na
+    s.slTag := na
+    s.tp1Tag := na
+    s.tp2Tag := na
+    s.tp3Tag := na
+
+// Draws (or redraws, after f_deleteTradeVisuals cleared the old ones) the "live
+// position" visuals for a setup's current entry/SL/TP prices, starting at this bar.
+// Shared by STATE 5's impulse entry, STATE 2's retracement entry, and the day-
+// rollover redraw below, so all three stay in sync instead of drifting apart.
+f_drawTradeVisuals(s) =>
+    if showTradeZone
+        lastTpPrice = numTPs == 1 ? s.tp1Price : numTPs == 2 ? s.tp2Price : s.tp3Price
+        initialRight = bar_index + minWidthBars
+
+        for i = 0 to fadeBands - 1
+            transp = int(65 + 29.0 * i / (fadeBands - 1))
+            riskY0 = s.entryPrice + (s.slPrice - s.entryPrice) * i / fadeBands
+            riskY1 = s.entryPrice + (s.slPrice - s.entryPrice) * (i + 1) / fadeBands
+            array.push(s.riskBands, box.new(bar_index, math.max(riskY0, riskY1), initialRight, math.min(riskY0, riskY1), border_color=na, bgcolor=color.new(dnCss, transp)))
+            rewardY0 = s.entryPrice + (lastTpPrice - s.entryPrice) * i / fadeBands
+            rewardY1 = s.entryPrice + (lastTpPrice - s.entryPrice) * (i + 1) / fadeBands
+            array.push(s.rewardBands, box.new(bar_index, math.max(rewardY0, rewardY1), initialRight, math.min(rewardY0, rewardY1), border_color=na, bgcolor=color.new(upCss, transp)))
+
+        s.entryLine := line.new(bar_index, s.entryPrice, initialRight, s.entryPrice, color=color.new(color.white, 20), style=line.style_solid)
+        s.slLine := line.new(bar_index, s.slPrice, initialRight, s.slPrice, color=dnCss, style=line.style_dashed)
+        s.tp1Line := line.new(bar_index, s.tp1Price, initialRight, s.tp1Price, color=upCss, style=line.style_dashed, width=2)
+        if numTPs >= 2
+            s.tp2Line := line.new(bar_index, s.tp2Price, initialRight, s.tp2Price, color=color.new(upCss, 30), style=line.style_dashed)
+        if numTPs >= 3
+            s.tp3Line := line.new(bar_index, s.tp3Price, initialRight, s.tp3Price, color=color.new(upCss, 30), style=line.style_dashed)
+
+        s.entryTag := label.new(initialRight, s.entryPrice, "Entry (" + str.tostring(s.entryPrice, format.mintick) + ")", style=label.style_label_left, color=color.gray, textcolor=color.white, size=size.small)
+        s.slTag := label.new(initialRight, s.slPrice, "SL (" + str.tostring(s.slPrice, format.mintick) + ")", style=label.style_label_left, color=dnCss, textcolor=color.white, size=size.small)
+        s.tp1Tag := label.new(initialRight, s.tp1Price, "TP1 (" + str.tostring(s.tp1Price, format.mintick) + ")", style=label.style_label_left, color=upCss, textcolor=color.white, size=size.small)
+        if numTPs >= 2
+            s.tp2Tag := label.new(initialRight, s.tp2Price, "TP2 (" + str.tostring(s.tp2Price, format.mintick) + ")", style=label.style_label_left, color=upCss, textcolor=color.white, size=size.small)
+        if numTPs >= 3
+            s.tp3Tag := label.new(initialRight, s.tp3Price, "TP3 (" + str.tostring(s.tp3Price, format.mintick) + ")", style=label.style_label_left, color=upCss, textcolor=color.white, size=size.small)
+
+// Deletes a STATE 2 setup's retracement-zone box, if it has one.
+f_deleteZoneVisual(s) =>
+    if not na(s.zoneBox)
+        box.delete(s.zoneBox)
+    s.zoneBox := na
+
+// Draws (or redraws) a STATE 2 setup's retracement-zone box at this bar's zoneHigh/
+// zoneLow, used both at the STATE 1/4 -> STATE 2 transition and, below, to give the
+// zone box a fresh same-day redraw after f_deleteZoneVisual cleared yesterday's.
+f_drawZoneVisual(s) =>
+    if showZone
+        s.zoneBox := box.new(bar_index, s.zoneHigh, bar_index, s.zoneLow, border_color=color.orange, bgcolor=color.new(color.orange, 85))
 
 bool exitSignal   = false
 bool isLongEntry  = false   // set true on any bar where a long entry fires (drives the "L" marker)
@@ -435,6 +535,18 @@ if numSetups > 0
     for idx = numSetups - 1 to 0    // iterate backwards so array.remove() below is safe mid-loop
         Setup s = array.get(setups, idx)
         bool removeThis = false     // set true anywhere below to drop this setup after this bar
+
+        // New day: give this setup's visuals (if it's holding any) a fresh same-day
+        // redraw instead of letting yesterday's box/lines keep stretching across the
+        // boundary -- same idea as the range box/line above, extended to every
+        // setup still alive (watching or in-trade) when the day rolls over.
+        if isNewDay
+            if s.state == 2
+                f_deleteZoneVisual(s)
+                f_drawZoneVisual(s)
+            else if s.state == 3 and array.size(s.riskBands) > 0
+                f_deleteTradeVisuals(s)
+                f_drawTradeVisuals(s)
 
         // ============================================================
         // STATE 3 -- simulated trade is open: watch for SL / TP / stagnation
@@ -650,8 +762,7 @@ if numSetups > 0
                         s.zoneLow := zL
                         s.touchedZone := false
                         s.state := 2
-                        if showZone
-                            s.zoneBox := box.new(bar_index, s.zoneHigh, bar_index, s.zoneLow, border_color=color.orange, bgcolor=color.new(color.orange, 85))
+                        f_drawZoneVisual(s)
                         s.stageLog := s.stageLog + "\nState 1: " + (bullBreak ? "Bullish" : "Bearish") + " full-body breakout at bar " + str.tostring(bar_index) + " (close " + str.tostring(close, format.mintick) + "), fakeout filter off -> zone identified directly (State 2), zone " + str.tostring(zL, format.mintick) + " - " + str.tostring(zH, format.mintick) + "."
                         alert("Sideway Breakout Bot: " + (s.dir == 1 ? "bullish" : "bearish") + " breakout confirmed, zone identified", alert.freq_once_per_bar_close)
                 else if bar_index - s.lockBar > maxBarsWatch
@@ -690,8 +801,7 @@ if numSetups > 0
                     zoneStart2 = s.dir == 1 ? s.zoneHigh : s.zoneLow
                     s.touchedZone := s.dir == 1 ? ta.lowest(low, scanLen2) <= zoneStart2 : ta.highest(high, scanLen2) >= zoneStart2
                     s.state := 2
-                    if showZone
-                        s.zoneBox := box.new(bar_index, s.zoneHigh, bar_index, s.zoneLow, border_color=color.orange, bgcolor=color.new(color.orange, 85))
+                    f_drawZoneVisual(s)
                     s.stageLog := s.stageLog + "\nState 4: Confirmation candle at bar " + str.tostring(bar_index) + " (close " + str.tostring(close, format.mintick) + ") cleared the range -> zone identified (State 2), zone " + str.tostring(zL, format.mintick) + " - " + str.tostring(zH, format.mintick) + "."
                     alert("Sideway Breakout Bot: " + (s.dir == 1 ? "bullish" : "bearish") + " breakout confirmed, zone identified", alert.freq_once_per_bar_close)
                 else
@@ -774,34 +884,7 @@ if numSetups > 0
                             else
                                 isShortEntry := true
 
-                        if showTradeZone
-                            lastTpPrice = numTPs == 1 ? s.tp1Price : numTPs == 2 ? s.tp2Price : s.tp3Price
-                            initialRight = bar_index + minWidthBars
-
-                            for i = 0 to fadeBands - 1
-                                transp = int(65 + 29.0 * i / (fadeBands - 1))
-                                riskY0 = s.entryPrice + (s.slPrice - s.entryPrice) * i / fadeBands
-                                riskY1 = s.entryPrice + (s.slPrice - s.entryPrice) * (i + 1) / fadeBands
-                                array.push(s.riskBands, box.new(bar_index, math.max(riskY0, riskY1), initialRight, math.min(riskY0, riskY1), border_color=na, bgcolor=color.new(dnCss, transp)))
-                                rewardY0 = s.entryPrice + (lastTpPrice - s.entryPrice) * i / fadeBands
-                                rewardY1 = s.entryPrice + (lastTpPrice - s.entryPrice) * (i + 1) / fadeBands
-                                array.push(s.rewardBands, box.new(bar_index, math.max(rewardY0, rewardY1), initialRight, math.min(rewardY0, rewardY1), border_color=na, bgcolor=color.new(upCss, transp)))
-
-                            s.entryLine := line.new(bar_index, s.entryPrice, initialRight, s.entryPrice, color=color.new(color.white, 20), style=line.style_solid)
-                            s.slLine := line.new(bar_index, s.slPrice, initialRight, s.slPrice, color=dnCss, style=line.style_dashed)
-                            s.tp1Line := line.new(bar_index, s.tp1Price, initialRight, s.tp1Price, color=upCss, style=line.style_dashed, width=2)
-                            if numTPs >= 2
-                                s.tp2Line := line.new(bar_index, s.tp2Price, initialRight, s.tp2Price, color=color.new(upCss, 30), style=line.style_dashed)
-                            if numTPs >= 3
-                                s.tp3Line := line.new(bar_index, s.tp3Price, initialRight, s.tp3Price, color=color.new(upCss, 30), style=line.style_dashed)
-
-                            s.entryTag := label.new(initialRight, s.entryPrice, "Entry (" + str.tostring(s.entryPrice, format.mintick) + ")", style=label.style_label_left, color=color.gray, textcolor=color.white, size=size.small)
-                            s.slTag := label.new(initialRight, s.slPrice, "SL (" + str.tostring(s.slPrice, format.mintick) + ")", style=label.style_label_left, color=dnCss, textcolor=color.white, size=size.small)
-                            s.tp1Tag := label.new(initialRight, s.tp1Price, "TP1 (" + str.tostring(s.tp1Price, format.mintick) + ")", style=label.style_label_left, color=upCss, textcolor=color.white, size=size.small)
-                            if numTPs >= 2
-                                s.tp2Tag := label.new(initialRight, s.tp2Price, "TP2 (" + str.tostring(s.tp2Price, format.mintick) + ")", style=label.style_label_left, color=upCss, textcolor=color.white, size=size.small)
-                            if numTPs >= 3
-                                s.tp3Tag := label.new(initialRight, s.tp3Price, "TP3 (" + str.tostring(s.tp3Price, format.mintick) + ")", style=label.style_label_left, color=upCss, textcolor=color.white, size=size.small)
+                        f_drawTradeVisuals(s)
 
                         // Same "i" tooltip marker as STATE 2's entry, but describing the
                         // impulse path instead of a zone/FVG (there wasn't one -- the whole
@@ -928,49 +1011,7 @@ if numSetups > 0
                             else
                                 isShortEntry := true
 
-                        if showTradeZone
-                            // Reward zone extends only as far as whichever TP is actually the
-                            // last one enabled (numTPs), not always all the way to TP3.
-                            lastTpPrice = numTPs == 1 ? s.tp1Price : numTPs == 2 ? s.tp2Price : s.tp3Price
-                            // Start already minWidthBars wide (not a 1-bar sliver) so a brand-new
-                            // entry is immediately visible -- the per-bar update above then keeps
-                            // extending past this once real bars catch up to it.
-                            initialRight = bar_index + minWidthBars
-
-                            // Smooth fade like TradingView's own long/short position tool: stack
-                            // `fadeBands` thin strips from entryPrice out to the SL/TP edge, each
-                            // one more transparent than the last, instead of one flat-opacity box.
-                            // Interpolating the price boundaries directly (rather than branching
-                            // on s.dir) keeps this correct whether the far edge is above or below
-                            // entryPrice.
-                            for i = 0 to fadeBands - 1
-                                transp = int(65 + 29.0 * i / (fadeBands - 1))
-                                riskY0 = s.entryPrice + (s.slPrice - s.entryPrice) * i / fadeBands
-                                riskY1 = s.entryPrice + (s.slPrice - s.entryPrice) * (i + 1) / fadeBands
-                                array.push(s.riskBands, box.new(bar_index, math.max(riskY0, riskY1), initialRight, math.min(riskY0, riskY1), border_color=na, bgcolor=color.new(dnCss, transp)))
-                                rewardY0 = s.entryPrice + (lastTpPrice - s.entryPrice) * i / fadeBands
-                                rewardY1 = s.entryPrice + (lastTpPrice - s.entryPrice) * (i + 1) / fadeBands
-                                array.push(s.rewardBands, box.new(bar_index, math.max(rewardY0, rewardY1), initialRight, math.min(rewardY0, rewardY1), border_color=na, bgcolor=color.new(upCss, transp)))
-
-                            s.entryLine := line.new(bar_index, s.entryPrice, initialRight, s.entryPrice, color=color.new(color.white, 20), style=line.style_solid)
-                            s.slLine := line.new(bar_index, s.slPrice, initialRight, s.slPrice, color=dnCss, style=line.style_dashed)
-                            // TP1's line is drawn slightly wider than TP2/TP3's for emphasis.
-                            s.tp1Line := line.new(bar_index, s.tp1Price, initialRight, s.tp1Price, color=upCss, style=line.style_dashed, width=2)
-                            if numTPs >= 2
-                                s.tp2Line := line.new(bar_index, s.tp2Price, initialRight, s.tp2Price, color=color.new(upCss, 30), style=line.style_dashed)
-                            if numTPs >= 3
-                                s.tp3Line := line.new(bar_index, s.tp3Price, initialRight, s.tp3Price, color=color.new(upCss, 30), style=line.style_dashed)
-
-                            // Right-edge price tags -- mirror TradingView's own position-tool
-                            // labels, showing each level's exact price, and slide forward with
-                            // the lines/bands above as the trade lives.
-                            s.entryTag := label.new(initialRight, s.entryPrice, "Entry (" + str.tostring(s.entryPrice, format.mintick) + ")", style=label.style_label_left, color=color.gray, textcolor=color.white, size=size.small)
-                            s.slTag := label.new(initialRight, s.slPrice, "SL (" + str.tostring(s.slPrice, format.mintick) + ")", style=label.style_label_left, color=dnCss, textcolor=color.white, size=size.small)
-                            s.tp1Tag := label.new(initialRight, s.tp1Price, "TP1 (" + str.tostring(s.tp1Price, format.mintick) + ")", style=label.style_label_left, color=upCss, textcolor=color.white, size=size.small)
-                            if numTPs >= 2
-                                s.tp2Tag := label.new(initialRight, s.tp2Price, "TP2 (" + str.tostring(s.tp2Price, format.mintick) + ")", style=label.style_label_left, color=upCss, textcolor=color.white, size=size.small)
-                            if numTPs >= 3
-                                s.tp3Tag := label.new(initialRight, s.tp3Price, "TP3 (" + str.tostring(s.tp3Price, format.mintick) + ")", style=label.style_label_left, color=upCss, textcolor=color.white, size=size.small)
+                        f_drawTradeVisuals(s)
 
                         // Small "i" marker at the exact entry point, carrying a tooltip
                         // (hover to expand) explaining why the entry fired: the range and
