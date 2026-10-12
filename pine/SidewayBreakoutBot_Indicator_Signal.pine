@@ -89,14 +89,28 @@ mt5Secret = input.string("changeme", "Shared Secret (must match the bridge)", gr
 // valid JSON, so those don't need to be touched. These only BUILD the JSON string --
 // alert() itself is still called directly at each site below, exactly like every other
 // alert in this file, rather than from inside a function.
+// Escapes backslash and double-quote so an interpolated value (the secret, or a
+// ticker with an unusual symbol) can never break the JSON it's embedded in --
+// without this, a secret containing a `"` would silently corrupt every signal.
+f_jsonEscape(s) =>
+    str.replace_all(str.replace_all(s, "\\", "\\\\"), "\"", "\\\"")
+
+// Shared group_id/dir-string builders so the STATE 5 and STATE 2 entry paths (and
+// the MODIFY_SL/CLOSE sites) can never drift out of sync with each other's format.
+f_groupId(entryBar, dir) =>
+    f_jsonEscape(syminfo.ticker) + "_" + str.tostring(entryBar) + "_" + (dir == 1 ? "L" : "S")
+
+f_dirStr(dir) =>
+    dir == 1 ? "BUY" : "SELL"
+
 f_openMsg(groupId, dirStr, leg, legsTotal, entryPrice, slPrice, tpPrice) =>
-    '{"v":1,"action":"OPEN","secret":"' + mt5Secret + '","group_id":"' + groupId + '","leg":' + str.tostring(leg) + ',"legs_total":' + str.tostring(legsTotal) + ',"symbol":"' + syminfo.ticker + '","dir":"' + dirStr + '","entry":' + str.tostring(entryPrice, format.mintick) + ',"sl":' + str.tostring(slPrice, format.mintick) + ',"tp":' + str.tostring(tpPrice, format.mintick) + '}'
+    '{"v":1,"action":"OPEN","secret":"' + f_jsonEscape(mt5Secret) + '","group_id":"' + groupId + '","leg":' + str.tostring(leg) + ',"legs_total":' + str.tostring(legsTotal) + ',"symbol":"' + f_jsonEscape(syminfo.ticker) + '","dir":"' + dirStr + '","entry":' + str.tostring(entryPrice, format.mintick) + ',"sl":' + str.tostring(slPrice, format.mintick) + ',"tp":' + str.tostring(tpPrice, format.mintick) + '}'
 
 f_modifySlMsg(groupId, slPrice) =>
-    '{"v":1,"action":"MODIFY_SL","secret":"' + mt5Secret + '","group_id":"' + groupId + '","sl":' + str.tostring(slPrice, format.mintick) + '}'
+    '{"v":1,"action":"MODIFY_SL","secret":"' + f_jsonEscape(mt5Secret) + '","group_id":"' + groupId + '","sl":' + str.tostring(slPrice, format.mintick) + '}'
 
 f_closeMsg(groupId) =>
-    '{"v":1,"action":"CLOSE","secret":"' + mt5Secret + '","group_id":"' + groupId + '"}'
+    '{"v":1,"action":"CLOSE","secret":"' + f_jsonEscape(mt5Secret) + '","group_id":"' + groupId + '"}'
 
 // ───────────────────────────── Range Detector (LuxAlgo) ─────────────────────────────
 // This whole block just decides: is price currently "sideways"? It draws one evolving
@@ -348,9 +362,40 @@ type Setup
 
 var array<Setup> setups = array.new<Setup>()
 
+// Deletes the "live position" visuals (risk/reward bands, entry/SL/TP lines and
+// right-edge tags) for a setup once its trade closes, instead of relying solely on
+// TradingView's 500-object hard caps to evict them later. The fixed historical
+// markers (slLbl/tp1Lbl/.../entryInfoLbl) are intentionally left alone -- those are
+// meant to be a permanent record on the chart, same as the dashboard's tradeHistory.
+f_deleteTradeVisuals(s) =>
+    for b in s.riskBands
+        box.delete(b)
+    for b in s.rewardBands
+        box.delete(b)
+    line.delete(s.entryLine)
+    line.delete(s.slLine)
+    line.delete(s.tp1Line)
+    line.delete(s.tp2Line)
+    line.delete(s.tp3Line)
+    label.delete(s.entryTag)
+    label.delete(s.slTag)
+    label.delete(s.tp1Tag)
+    label.delete(s.tp2Tag)
+    label.delete(s.tp3Tag)
+
 bool exitSignal   = false
 bool isLongEntry  = false   // set true on any bar where a long entry fires (drives the "L" marker)
 bool isShortEntry = false   // set true on any bar where a short entry fires (drives the "S" marker)
+// Second slots: with several setups able to run concurrently (allowStackedEntries),
+// two can enter/exit on the very same bar. A single shared bool can only register one
+// of them, silently swallowing the chart marker/alertcondition for the other even
+// though its own alert()/tradeHistory push still fired correctly -- this is one of the
+// causes behind "dashboard total trades" looking higher than the visible marker count.
+// The *2 slot catches the second simultaneous event; any further ones beyond that
+// still only get the webhook/tradeHistory record, not an extra marker (same as before).
+bool exitSignal2   = false
+bool isLongEntry2  = false
+bool isShortEntry2 = false
 // Per-event flags below each drive their own alertcondition() at the bottom of the
 // script, so SL/TP1/TP2/TP3/stagnant-close can each be set up as a SEPARATE TradingView
 // alert (with its own sound/popup/app-notification choices) instead of one generic
@@ -360,6 +405,24 @@ bool tp1HitSignal     = false
 bool tp2HitSignal     = false
 bool tp3HitSignal     = false
 bool stagnantSignal   = false
+
+// Entries are pushed onto tradedHigh/tradedLow/tradedDir/tradedBar in increasing
+// bar_index order and never removed, so on a long chart they grow without bound even
+// though f_zoneAlreadyTraded only ever looks at ones within retestGuardBars -- the
+// oldest entries sit at the front, so popping from the front while it's expired (or,
+// when the guard is off, dropping everything -- there's nothing left to ever match)
+// keeps them bounded without changing which zones the guard actually blocks.
+if retestGuardBars <= 0
+    array.clear(tradedHigh)
+    array.clear(tradedLow)
+    array.clear(tradedDir)
+    array.clear(tradedBar)
+else
+    while array.size(tradedBar) > 0 and bar_index - array.get(tradedBar, 0) > retestGuardBars
+        array.shift(tradedHigh)
+        array.shift(tradedLow)
+        array.shift(tradedDir)
+        array.shift(tradedBar)
 
 // ---- Advance every active setup, one state-step per bar ----
 // IMPORTANT: this uses if / else-if (not separate independent `if`s) so that only ONE
@@ -393,7 +456,7 @@ if numSetups > 0
                 alert("Sideway Breakout Bot: TP1 hit" + (numTPs >= 2 ? ", SL moved to breakeven" : ", trade closed"), alert.freq_once_per_bar_close)
                 if numTPs >= 2
                     // Legs 2/3 are still open on the broker -- move their SL to breakeven.
-                    alert(f_modifySlMsg(syminfo.ticker + "_" + str.tostring(s.entryBar) + "_" + (s.dir == 1 ? "L" : "S"), s.entryPrice), alert.freq_once_per_bar_close)
+                    alert(f_modifySlMsg(f_groupId(s.entryBar, s.dir), s.entryPrice), alert.freq_once_per_bar_close)
             if numTPs >= 2 and s.tp1Hit and not s.tp2Hit and (s.dir == 1 ? high >= s.tp2Price : low <= s.tp2Price)
                 s.tp2Hit := true
                 if showTPLabels
@@ -472,13 +535,22 @@ if numSetups > 0
                 // breakout in the OPPOSITE direction, starting fresh from state 1.
                 if showTPLabels
                     s.slLbl := label.new(bar_index, stopNow, "SL", style=label.style_circle, color=dnCss, textcolor=color.white, size=size.tiny)
-                exitSignal := true
+                if exitSignal
+                    exitSignal2 := true
+                else
+                    exitSignal := true
                 slHitSignal := true
                 array.push(tradeHistory, TradeRecord.new(exitTime=time, dir=s.dir, exitReason=(stopNow == s.entryPrice ? "Breakeven" : "SL"), rResult=f_realizedR(tpsReachedNow, stopNow, s.entryPrice, riskDistance, s.dir), isImpulse=s.isImpulse, tpsReached=tpsReachedNow))
                 s.stageLog := s.stageLog + "\nState 3: " + (stopNow == s.entryPrice ? "Breakeven stop" : "SL") + " hit at bar " + str.tostring(bar_index) + " (" + str.tostring(stopNow, format.mintick) + ") -> trade closed."
                 label.new(bar_index, high + iLblOffset, "i", style=label.style_label_down, color=color.new(color.gray, 0), textcolor=color.white, size=size.small, tooltip=s.stageLog)
                 alert("Sideway Breakout Bot: SL hit, trade closed", alert.freq_once_per_bar_close)
-                if s.flipsUsed < maxSlFlips
+                // This setup is about to be removed below (removeThis := true), so the
+                // flip replacement keeps the live count unchanged -- compare against
+                // array.size(setups) - 1 (itself excluded) rather than canArmNewSetup's
+                // raw count, otherwise a live-at-the-cap setup could never flip at all.
+                otherSetupsCount = array.size(setups) - 1
+                canFlip = allowStackedEntries ? otherSetupsCount < maxConcurrentSetups : otherSetupsCount == 0
+                if s.flipsUsed < maxSlFlips and canFlip
                     array.push(setups, Setup.new(state=1, lockedHigh=s.lockedHigh, lockedLow=s.lockedLow, lockBar=bar_index, dir=0, breakoutTime=na, breakoutBar=na,
                          isImpulse=false, impulsePct=na, preBreakoutLevel=na,
                          zoneHigh=na, zoneLow=na, touchedZone=false, zoneBox=na, slPrice=na, entryPrice=na,
@@ -489,28 +561,37 @@ if numSetups > 0
                          slLbl=na, tp1Lbl=na, tp2Lbl=na, tp3Lbl=na, entryInfoLbl=na, flipsUsed=s.flipsUsed + 1, entryBar=na, leftEntry=false, confirmedOutOfSession=false,
                          stageLog="State 1: Re-watching range " + str.tostring(s.lockedLow, format.mintick) + " - " + str.tostring(s.lockedHigh, format.mintick) + " for the opposite breakout after an SL (flip #" + str.tostring(s.flipsUsed + 1) + ")."))
                     alert("Sideway Breakout Bot: watching the same range for an opposite breakout", alert.freq_once_per_bar_close)
+                f_deleteTradeVisuals(s)
                 removeThis := true
             else if finalTpHit
                 // Trade won all the way to its last target -- just close, no flip.
                 finalTpPrice = numTPs == 1 ? s.tp1Price : numTPs == 2 ? s.tp2Price : s.tp3Price
-                exitSignal := true
+                if exitSignal
+                    exitSignal2 := true
+                else
+                    exitSignal := true
                 array.push(tradeHistory, TradeRecord.new(exitTime=time, dir=s.dir, exitReason=(numTPs == 1 ? "TP1" : numTPs == 2 ? "TP2" : "TP3"), rResult=f_realizedR(tpsReachedNow, finalTpPrice, s.entryPrice, riskDistance, s.dir), isImpulse=s.isImpulse, tpsReached=tpsReachedNow))
                 // TP1/TP2/TP3-hit lines above already logged each tier as it hit (including
                 // "trade closed" on the final tier), so nothing further to append here --
                 // just surface the complete flow at the exact bar the trade actually closes.
                 label.new(bar_index, high + iLblOffset, "i", style=label.style_label_down, color=color.new(color.gray, 0), textcolor=color.white, size=size.small, tooltip=s.stageLog)
+                f_deleteTradeVisuals(s)
                 removeThis := true
             else if stagnant
                 // Trade never showed any progress -- cut it, no flip (this isn't an SL hit).
-                exitSignal := true
+                if exitSignal
+                    exitSignal2 := true
+                else
+                    exitSignal := true
                 stagnantSignal := true
                 array.push(tradeHistory, TradeRecord.new(exitTime=time, dir=s.dir, exitReason="Stagnant", rResult=f_realizedR(tpsReachedNow, close, s.entryPrice, riskDistance, s.dir), isImpulse=s.isImpulse, tpsReached=tpsReachedNow))
                 s.stageLog := s.stageLog + "\nState 3: No progress within " + str.tostring(stagnationBars) + " bars (price never traded past entry in its favor) -> trade closed stagnant at " + str.tostring(close, format.mintick) + "."
                 label.new(bar_index, high + iLblOffset, "i", style=label.style_label_down, color=color.new(color.gray, 0), textcolor=color.white, size=size.small, tooltip=s.stageLog)
+                f_deleteTradeVisuals(s)
                 removeThis := true
                 alert("Sideway Breakout Bot: stagnant trade closed after " + str.tostring(stagnationBars) + " bars", alert.freq_once_per_bar_close)
                 // No native SL/TP triggers a stagnation close -- tell the bridge to flatten every leg.
-                alert(f_closeMsg(syminfo.ticker + "_" + str.tostring(s.entryBar) + "_" + (s.dir == 1 ? "L" : "S")), alert.freq_once_per_bar_close)
+                alert(f_closeMsg(f_groupId(s.entryBar, s.dir)), alert.freq_once_per_bar_close)
 
         // ============================================================
         // STATE 1 -- watching the locked range for a full-body breakout
@@ -634,94 +715,110 @@ if numSetups > 0
             invalidated5 = s.dir == 1 ? low < s.lockedLow : high > s.lockedHigh
             minutesSinceBreakout5 = (time - s.breakoutTime) / 60000.0
 
-            if invalidated5 or minutesSinceBreakout5 > retraceTimeoutMin
-                s.stageLog := s.stageLog + "\nState 5: " + (invalidated5 ? "Price reversed back through the far side of the range before the impulse entry could fire (thesis invalidated)." :
-                     "Retracement timeout (" + str.tostring(retraceTimeoutMin) + " min) exceeded while waiting" + (not inSession ? " -- still outside the trading session window (" + sessionWindow + ") the whole time." : ".")) + " -> setup dropped."
-                label.new(bar_index, high + iLblOffset, "i", style=label.style_label_down, color=color.new(color.gray, 0), textcolor=color.white, size=size.small, tooltip=s.stageLog)
-                removeThis := true
-            else if inSession
-                // ---- Entry! entryPrice is this candle's open (the very next candle
-                // after the impulse breakout candle) instead of a confirmed retracement
-                // close. The SL sits just beyond the far side of the locked range
-                // (same reference STATE 2 uses), not the pre-breakout candle's wick --
-                // that wick sits too close to price for an impulse move and got clipped
-                // by ordinary noise. ----
-                candidateEntry = open
-                buffer = slBufferATRMult * atrVal
-                candidateSl = s.dir == 1 ? s.lockedLow - buffer : s.lockedHigh + buffer
-                r = math.abs(candidateEntry - candidateSl)
-
-                if r <= 0 or (maxSlPips > 0 and r > maxSlPips * pipSize) or f_zoneAlreadyTraded(s.dir, s.lockedHigh, s.lockedLow)
-                    skipReason5 = r <= 0 ? "zero/invalid risk distance (entry landed exactly on the stop level)" :
-                         (maxSlPips > 0 and r > maxSlPips * pipSize) ? ("SL distance (" + str.tostring(r / pipSize, "#.#") + " pips) exceeds Max SL Distance (" + str.tostring(maxSlPips, "#.#") + " pips)") :
-                         "this exact range+direction already produced an entry before (retest-and-continue guard)"
-                    s.stageLog := s.stageLog + "\nState 5: Would enter at " + str.tostring(candidateEntry, format.mintick) + ", but " + skipReason5 + " -> setup dropped."
+            // barstate.isconfirmed: candidateEntry below is this candle's `open`, which
+            // never changes once the bar starts -- but candidateSl depends on atrVal,
+            // which DOES keep changing intrabar until the bar closes (same reasoning
+            // STATE 2/4 already apply to their own decisions). Without this gate, the
+            // SL distance actually locked in (and sent to MT5 via the OPEN webhook)
+            // could be computed from a mid-formation ATR reading a stable read would
+            // never have produced. This does mean the impulse entry registers at this
+            // candle's CLOSE rather than the instant it opens -- slightly slower, but
+            // consistent with every other decision point in this script.
+            if barstate.isconfirmed
+                if invalidated5 or minutesSinceBreakout5 > retraceTimeoutMin
+                    s.stageLog := s.stageLog + "\nState 5: " + (invalidated5 ? "Price reversed back through the far side of the range before the impulse entry could fire (thesis invalidated)." :
+                         "Retracement timeout (" + str.tostring(retraceTimeoutMin) + " min) exceeded while waiting" + (not inSession ? " -- still outside the trading session window (" + sessionWindow + ") the whole time." : ".")) + " -> setup dropped."
                     label.new(bar_index, high + iLblOffset, "i", style=label.style_label_down, color=color.new(color.gray, 0), textcolor=color.white, size=size.small, tooltip=s.stageLog)
                     removeThis := true
-                else
-                    array.push(tradedHigh, s.lockedHigh)
-                    array.push(tradedLow, s.lockedLow)
-                    array.push(tradedDir, s.dir)
-                    array.push(tradedBar, bar_index)
+                else if inSession
+                    // ---- Entry! entryPrice is this candle's open (the very next candle
+                    // after the impulse breakout candle) instead of a confirmed retracement
+                    // close. The SL sits just beyond the far side of the locked range
+                    // (same reference STATE 2 uses), not the pre-breakout candle's wick --
+                    // that wick sits too close to price for an impulse move and got clipped
+                    // by ordinary noise. ----
+                    candidateEntry = open
+                    buffer = slBufferATRMult * atrVal
+                    candidateSl = s.dir == 1 ? s.lockedLow - buffer : s.lockedHigh + buffer
+                    r = math.abs(candidateEntry - candidateSl)
 
-                    s.entryPrice := candidateEntry
-                    s.slPrice := candidateSl
-                    s.tp1Price := s.dir == 1 ? s.entryPrice + r * tp1R : s.entryPrice - r * tp1R
-                    s.tp2Price := s.dir == 1 ? s.entryPrice + r * tp2R : s.entryPrice - r * tp2R
-                    s.tp3Price := s.dir == 1 ? s.entryPrice + r * tp3R : s.entryPrice - r * tp3R
-
-                    s.state := 3
-                    s.entryBar := bar_index
-                    if s.dir == 1
-                        isLongEntry := true
+                    if r <= 0 or (maxSlPips > 0 and r > maxSlPips * pipSize) or f_zoneAlreadyTraded(s.dir, s.lockedHigh, s.lockedLow)
+                        skipReason5 = r <= 0 ? "zero/invalid risk distance (entry landed exactly on the stop level)" :
+                             (maxSlPips > 0 and r > maxSlPips * pipSize) ? ("SL distance (" + str.tostring(r / pipSize, "#.#") + " pips) exceeds Max SL Distance (" + str.tostring(maxSlPips, "#.#") + " pips)") :
+                             "this exact range+direction already produced an entry before (retest-and-continue guard)"
+                        s.stageLog := s.stageLog + "\nState 5: Would enter at " + str.tostring(candidateEntry, format.mintick) + ", but " + skipReason5 + " -> setup dropped."
+                        label.new(bar_index, high + iLblOffset, "i", style=label.style_label_down, color=color.new(color.gray, 0), textcolor=color.white, size=size.small, tooltip=s.stageLog)
+                        removeThis := true
                     else
-                        isShortEntry := true
+                        array.push(tradedHigh, s.lockedHigh)
+                        array.push(tradedLow, s.lockedLow)
+                        array.push(tradedDir, s.dir)
+                        array.push(tradedBar, bar_index)
 
-                    if showTradeZone
-                        lastTpPrice = numTPs == 1 ? s.tp1Price : numTPs == 2 ? s.tp2Price : s.tp3Price
-                        initialRight = bar_index + minWidthBars
+                        s.entryPrice := candidateEntry
+                        s.slPrice := candidateSl
+                        s.tp1Price := s.dir == 1 ? s.entryPrice + r * tp1R : s.entryPrice - r * tp1R
+                        s.tp2Price := s.dir == 1 ? s.entryPrice + r * tp2R : s.entryPrice - r * tp2R
+                        s.tp3Price := s.dir == 1 ? s.entryPrice + r * tp3R : s.entryPrice - r * tp3R
 
-                        for i = 0 to fadeBands - 1
-                            transp = int(65 + 29.0 * i / (fadeBands - 1))
-                            riskY0 = s.entryPrice + (s.slPrice - s.entryPrice) * i / fadeBands
-                            riskY1 = s.entryPrice + (s.slPrice - s.entryPrice) * (i + 1) / fadeBands
-                            array.push(s.riskBands, box.new(bar_index, math.max(riskY0, riskY1), initialRight, math.min(riskY0, riskY1), border_color=na, bgcolor=color.new(dnCss, transp)))
-                            rewardY0 = s.entryPrice + (lastTpPrice - s.entryPrice) * i / fadeBands
-                            rewardY1 = s.entryPrice + (lastTpPrice - s.entryPrice) * (i + 1) / fadeBands
-                            array.push(s.rewardBands, box.new(bar_index, math.max(rewardY0, rewardY1), initialRight, math.min(rewardY0, rewardY1), border_color=na, bgcolor=color.new(upCss, transp)))
+                        s.state := 3
+                        s.entryBar := bar_index
+                        if s.dir == 1
+                            if isLongEntry
+                                isLongEntry2 := true
+                            else
+                                isLongEntry := true
+                        else
+                            if isShortEntry
+                                isShortEntry2 := true
+                            else
+                                isShortEntry := true
 
-                        s.entryLine := line.new(bar_index, s.entryPrice, initialRight, s.entryPrice, color=color.new(color.white, 20), style=line.style_solid)
-                        s.slLine := line.new(bar_index, s.slPrice, initialRight, s.slPrice, color=dnCss, style=line.style_dashed)
-                        s.tp1Line := line.new(bar_index, s.tp1Price, initialRight, s.tp1Price, color=upCss, style=line.style_dashed, width=2)
+                        if showTradeZone
+                            lastTpPrice = numTPs == 1 ? s.tp1Price : numTPs == 2 ? s.tp2Price : s.tp3Price
+                            initialRight = bar_index + minWidthBars
+
+                            for i = 0 to fadeBands - 1
+                                transp = int(65 + 29.0 * i / (fadeBands - 1))
+                                riskY0 = s.entryPrice + (s.slPrice - s.entryPrice) * i / fadeBands
+                                riskY1 = s.entryPrice + (s.slPrice - s.entryPrice) * (i + 1) / fadeBands
+                                array.push(s.riskBands, box.new(bar_index, math.max(riskY0, riskY1), initialRight, math.min(riskY0, riskY1), border_color=na, bgcolor=color.new(dnCss, transp)))
+                                rewardY0 = s.entryPrice + (lastTpPrice - s.entryPrice) * i / fadeBands
+                                rewardY1 = s.entryPrice + (lastTpPrice - s.entryPrice) * (i + 1) / fadeBands
+                                array.push(s.rewardBands, box.new(bar_index, math.max(rewardY0, rewardY1), initialRight, math.min(rewardY0, rewardY1), border_color=na, bgcolor=color.new(upCss, transp)))
+
+                            s.entryLine := line.new(bar_index, s.entryPrice, initialRight, s.entryPrice, color=color.new(color.white, 20), style=line.style_solid)
+                            s.slLine := line.new(bar_index, s.slPrice, initialRight, s.slPrice, color=dnCss, style=line.style_dashed)
+                            s.tp1Line := line.new(bar_index, s.tp1Price, initialRight, s.tp1Price, color=upCss, style=line.style_dashed, width=2)
+                            if numTPs >= 2
+                                s.tp2Line := line.new(bar_index, s.tp2Price, initialRight, s.tp2Price, color=color.new(upCss, 30), style=line.style_dashed)
+                            if numTPs >= 3
+                                s.tp3Line := line.new(bar_index, s.tp3Price, initialRight, s.tp3Price, color=color.new(upCss, 30), style=line.style_dashed)
+
+                            s.entryTag := label.new(initialRight, s.entryPrice, "Entry (" + str.tostring(s.entryPrice, format.mintick) + ")", style=label.style_label_left, color=color.gray, textcolor=color.white, size=size.small)
+                            s.slTag := label.new(initialRight, s.slPrice, "SL (" + str.tostring(s.slPrice, format.mintick) + ")", style=label.style_label_left, color=dnCss, textcolor=color.white, size=size.small)
+                            s.tp1Tag := label.new(initialRight, s.tp1Price, "TP1 (" + str.tostring(s.tp1Price, format.mintick) + ")", style=label.style_label_left, color=upCss, textcolor=color.white, size=size.small)
+                            if numTPs >= 2
+                                s.tp2Tag := label.new(initialRight, s.tp2Price, "TP2 (" + str.tostring(s.tp2Price, format.mintick) + ")", style=label.style_label_left, color=upCss, textcolor=color.white, size=size.small)
+                            if numTPs >= 3
+                                s.tp3Tag := label.new(initialRight, s.tp3Price, "TP3 (" + str.tostring(s.tp3Price, format.mintick) + ")", style=label.style_label_left, color=upCss, textcolor=color.white, size=size.small)
+
+                        // Same "i" tooltip marker as STATE 2's entry, but describing the
+                        // impulse path instead of a zone/FVG (there wasn't one -- the whole
+                        // point of impulse entries is to skip that wait).
+                        tpList5 = "TP1 " + str.tostring(s.tp1Price, format.mintick) +
+                             (numTPs >= 2 ? ", TP2 " + str.tostring(s.tp2Price, format.mintick) : "") +
+                             (numTPs >= 3 ? ", TP3 " + str.tostring(s.tp3Price, format.mintick) : "")
+                        s.stageLog := s.stageLog + "\nState 5: Entered " + (s.dir == 1 ? "LONG" : "SHORT") + " at " + str.tostring(s.entryPrice, format.mintick) + " (this candle's open, " + str.tostring(bar_index - s.breakoutBar) + " bar(s) after the breakout), SL " + str.tostring(s.slPrice, format.mintick) + " (range " + (s.dir == 1 ? "low" : "high") + " +/- buffer), " + tpList5 + ", risk 1R = " + str.tostring(r, format.mintick) + " -> in trade (State 3)." + (s.flipsUsed > 0 ? " [flip #" + str.tostring(s.flipsUsed) + " after a prior SL]" : "")
+                        s.entryInfoLbl := label.new(bar_index, high + iLblOffset, "i", style=label.style_label_down, color=color.new(color.blue, 0), textcolor=color.white, size=size.small, tooltip=s.stageLog)
+                        alert("Sideway Breakout Bot: " + (s.dir == 1 ? "LONG" : "SHORT") + " entry signal", alert.freq_once_per_bar_close)
+                        groupId5 = f_groupId(s.entryBar, s.dir)
+                        dirStr5 = f_dirStr(s.dir)
+                        alert(f_openMsg(groupId5, dirStr5, 1, numTPs, s.entryPrice, s.slPrice, s.tp1Price), alert.freq_once_per_bar_close)
                         if numTPs >= 2
-                            s.tp2Line := line.new(bar_index, s.tp2Price, initialRight, s.tp2Price, color=color.new(upCss, 30), style=line.style_dashed)
+                            alert(f_openMsg(groupId5, dirStr5, 2, numTPs, s.entryPrice, s.slPrice, s.tp2Price), alert.freq_once_per_bar_close)
                         if numTPs >= 3
-                            s.tp3Line := line.new(bar_index, s.tp3Price, initialRight, s.tp3Price, color=color.new(upCss, 30), style=line.style_dashed)
-
-                        s.entryTag := label.new(initialRight, s.entryPrice, "Entry (" + str.tostring(s.entryPrice, format.mintick) + ")", style=label.style_label_left, color=color.gray, textcolor=color.white, size=size.small)
-                        s.slTag := label.new(initialRight, s.slPrice, "SL (" + str.tostring(s.slPrice, format.mintick) + ")", style=label.style_label_left, color=dnCss, textcolor=color.white, size=size.small)
-                        s.tp1Tag := label.new(initialRight, s.tp1Price, "TP1 (" + str.tostring(s.tp1Price, format.mintick) + ")", style=label.style_label_left, color=upCss, textcolor=color.white, size=size.small)
-                        if numTPs >= 2
-                            s.tp2Tag := label.new(initialRight, s.tp2Price, "TP2 (" + str.tostring(s.tp2Price, format.mintick) + ")", style=label.style_label_left, color=upCss, textcolor=color.white, size=size.small)
-                        if numTPs >= 3
-                            s.tp3Tag := label.new(initialRight, s.tp3Price, "TP3 (" + str.tostring(s.tp3Price, format.mintick) + ")", style=label.style_label_left, color=upCss, textcolor=color.white, size=size.small)
-
-                    // Same "i" tooltip marker as STATE 2's entry, but describing the
-                    // impulse path instead of a zone/FVG (there wasn't one -- the whole
-                    // point of impulse entries is to skip that wait).
-                    tpList5 = "TP1 " + str.tostring(s.tp1Price, format.mintick) +
-                         (numTPs >= 2 ? ", TP2 " + str.tostring(s.tp2Price, format.mintick) : "") +
-                         (numTPs >= 3 ? ", TP3 " + str.tostring(s.tp3Price, format.mintick) : "")
-                    s.stageLog := s.stageLog + "\nState 5: Entered " + (s.dir == 1 ? "LONG" : "SHORT") + " at " + str.tostring(s.entryPrice, format.mintick) + " (this candle's open, " + str.tostring(bar_index - s.breakoutBar) + " bar(s) after the breakout), SL " + str.tostring(s.slPrice, format.mintick) + " (range " + (s.dir == 1 ? "low" : "high") + " +/- buffer), " + tpList5 + ", risk 1R = " + str.tostring(r, format.mintick) + " -> in trade (State 3)." + (s.flipsUsed > 0 ? " [flip #" + str.tostring(s.flipsUsed) + " after a prior SL]" : "")
-                    s.entryInfoLbl := label.new(bar_index, high + iLblOffset, "i", style=label.style_label_down, color=color.new(color.blue, 0), textcolor=color.white, size=size.small, tooltip=s.stageLog)
-                    alert("Sideway Breakout Bot: " + (s.dir == 1 ? "LONG" : "SHORT") + " entry signal", alert.freq_once_per_bar_close)
-                    groupId5 = syminfo.ticker + "_" + str.tostring(s.entryBar) + "_" + (s.dir == 1 ? "L" : "S")
-                    dirStr5 = s.dir == 1 ? "BUY" : "SELL"
-                    alert(f_openMsg(groupId5, dirStr5, 1, numTPs, s.entryPrice, s.slPrice, s.tp1Price), alert.freq_once_per_bar_close)
-                    if numTPs >= 2
-                        alert(f_openMsg(groupId5, dirStr5, 2, numTPs, s.entryPrice, s.slPrice, s.tp2Price), alert.freq_once_per_bar_close)
-                    if numTPs >= 3
-                        alert(f_openMsg(groupId5, dirStr5, 3, numTPs, s.entryPrice, s.slPrice, s.tp3Price), alert.freq_once_per_bar_close)
+                            alert(f_openMsg(groupId5, dirStr5, 3, numTPs, s.entryPrice, s.slPrice, s.tp3Price), alert.freq_once_per_bar_close)
 
         // ============================================================
         // STATE 2 -- wait for price to retrace into the zone, then a confirmation candle
@@ -821,9 +918,15 @@ if numSetups > 0
                         s.state := 3
                         s.entryBar := bar_index
                         if s.dir == 1
-                            isLongEntry := true
+                            if isLongEntry
+                                isLongEntry2 := true
+                            else
+                                isLongEntry := true
                         else
-                            isShortEntry := true
+                            if isShortEntry
+                                isShortEntry2 := true
+                            else
+                                isShortEntry := true
 
                         if showTradeZone
                             // Reward zone extends only as far as whichever TP is actually the
@@ -883,8 +986,8 @@ if numSetups > 0
                         s.stageLog := s.stageLog + "\nState 2: Retraced into the zone (" + zoneDesc + "), confirmation candle at bar " + str.tostring(bar_index) + " (close " + str.tostring(close, format.mintick) + ") -> entered " + (s.dir == 1 ? "LONG" : "SHORT") + " at " + str.tostring(s.entryPrice, format.mintick) + ", SL " + str.tostring(s.slPrice, format.mintick) + ", " + tpList + ", risk 1R = " + str.tostring(r, format.mintick) + " -> in trade (State 3)." + (s.flipsUsed > 0 ? " [flip #" + str.tostring(s.flipsUsed) + " after a prior SL]" : "")
                         s.entryInfoLbl := label.new(bar_index, high + iLblOffset, "i", style=label.style_label_down, color=color.new(color.blue, 0), textcolor=color.white, size=size.small, tooltip=s.stageLog)
                         alert("Sideway Breakout Bot: " + (s.dir == 1 ? "LONG" : "SHORT") + " entry signal", alert.freq_once_per_bar_close)
-                        groupId2 = syminfo.ticker + "_" + str.tostring(s.entryBar) + "_" + (s.dir == 1 ? "L" : "S")
-                        dirStr2 = s.dir == 1 ? "BUY" : "SELL"
+                        groupId2 = f_groupId(s.entryBar, s.dir)
+                        dirStr2 = f_dirStr(s.dir)
                         alert(f_openMsg(groupId2, dirStr2, 1, numTPs, s.entryPrice, s.slPrice, s.tp1Price), alert.freq_once_per_bar_close)
                         if numTPs >= 2
                             alert(f_openMsg(groupId2, dirStr2, 2, numTPs, s.entryPrice, s.slPrice, s.tp2Price), alert.freq_once_per_bar_close)
@@ -940,10 +1043,19 @@ if freshRange and canArmNewSetup and barstate.isconfirmed
 plotshape(isLongEntry, "Long Entry", shape.triangleup, location.belowbar, color.green, text="L", textcolor=color.white, size=size.small)
 plotshape(isShortEntry, "Short Entry", shape.triangledown, location.abovebar, color.red, text="S", textcolor=color.white, size=size.small)
 plotshape(exitSignal, "Trade Closed", shape.xcross, location.abovebar, color.gray, size=size.tiny)
+// Second marker slot for a bar where two setups enter/exit simultaneously (only
+// possible with allowStackedEntries) -- see the isLongEntry2/isShortEntry2/exitSignal2
+// declarations above for why a single shared bool isn't enough on its own.
+plotshape(isLongEntry2, "Long Entry (2nd)", shape.triangleup, location.belowbar, color.green, text="L", textcolor=color.white, size=size.small)
+plotshape(isShortEntry2, "Short Entry (2nd)", shape.triangledown, location.abovebar, color.red, text="S", textcolor=color.white, size=size.small)
+plotshape(exitSignal2, "Trade Closed (2nd)", shape.xcross, location.abovebar, color.gray, size=size.tiny)
 
 alertcondition(isLongEntry, "Long Entry Signal", "Sideway Breakout Bot: LONG entry signal")
 alertcondition(isShortEntry, "Short Entry Signal", "Sideway Breakout Bot: SHORT entry signal")
 alertcondition(exitSignal, "Trade Closed", "Sideway Breakout Bot: trade closed (SL or TP3)")
+alertcondition(isLongEntry2, "Long Entry Signal (2nd)", "Sideway Breakout Bot: LONG entry signal")
+alertcondition(isShortEntry2, "Short Entry Signal (2nd)", "Sideway Breakout Bot: SHORT entry signal")
+alertcondition(exitSignal2, "Trade Closed (2nd)", "Sideway Breakout Bot: trade closed (SL or TP3)")
 
 // Separate alertcondition() per event so each can be selected individually when
 // creating an alert in TradingView (Notifications tab controls sound/desktop/mobile push).
