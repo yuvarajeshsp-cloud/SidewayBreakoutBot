@@ -25,6 +25,19 @@ useBodyFilter    = input.bool(true, "Require Min Body Size", group=grpBreak)    
 bodyATRMult      = input.float(0.5, "Min Body Size (x ATR)", minval=0, group=grpBreak)      // how big (in ATR) a candle's body must be to count, when the filter above is on
 useFakeoutFilter = input.bool(true, "Require Confirmation Candle After Breakout", group=grpBreak) // require a 2nd candle to also clear the range before trusting the breakout
 
+grpVolume = "Volume Confirmation"
+// Proxy volume-confirmation filter (ported from the "Wick Sequence Breakout" reference
+// script): while a range is being watched, every bar's volume is split between buy/sell
+// proportionally to where that bar's close landed within its own high-low range (close
+// near the high = mostly buy volume, close near the low = mostly sell volume) -- a cheap
+// stand-in for real buy/sell tape, since OHLCV data alone doesn't carry that split. Only
+// bars that actually traded inside the locked range count. A full-body breakout is only
+// treated as valid if the dominant side agrees with the breakout direction; otherwise it's
+// silently ignored (same as if no breakout had fired at all) and the existing "Max Bars to
+// Wait for Breakout" timeout eventually drops the setup if a confirmed one never comes.
+useVolumeFilter = input.bool(true, "Require Volume Confirmation on Breakout", group=grpVolume)
+showVolumeBars  = input.bool(true, "Show Volume Confirmation Bars", group=grpVolume)        // draws the two thin buy/sell bars under the locked range, sized by their share of the accumulated volume
+
 grpImpulse = "Impulse Breakout"
 enableImpulseEntry = input.bool(true, "Enable Impulse Breakout Entry", group=grpImpulse)     // skip the fakeout-confirmation/retracement wait entirely when the breakout candle's body already closes far enough beyond the range, and just enter on the very next candle instead
 impulseThresholdPct = input.float(40.0, "Impulse Threshold (% of range beyond boundary)", minval=0, step=1, group=grpImpulse) // how far (as a % of the range's own height) the breakout candle's body must close beyond the boundary to count as an impulse move -- raised from 25 for 1-min, where ordinary noise spikes can otherwise overshoot a tight range by 25% without real conviction behind the move
@@ -307,6 +320,27 @@ f_zoneAlreadyTraded(d, hi, lo) =>
                     found := true
     found
 
+// Seeds a fresh setup's volume-confirmation tally from the `lenBars` bars that already
+// formed the range (the range detector only fires once `rangeLength` bars have already
+// stayed inside the band, so without this a setup would start its breakout-direction
+// vote from zero, ignoring everything that happened during the very consolidation it's
+// now watching). Only bars that actually traded inside [bot, top] count -- same gate the
+// per-bar accumulation in STATE 1 below uses, so a backfilled bar and a live one are
+// judged the same way.
+f_backfillVol(lenBars, top, bot) =>
+    float bBull = 0.0
+    float bBear = 0.0
+    for off = 0 to lenBars - 1
+        h = high[off]
+        l = low[off]
+        c = close[off]
+        v = volume[off]
+        r = math.max(h - l, syminfo.mintick)
+        if h > bot and l < top
+            bBull += v * (c - l) / r
+            bBear += v * (h - c) / r
+    [bBull, bBear]
+
 // ───────────────────────────── Trade history (for the dashboard) ─────────────────────────────
 // One row per closed (simulated) trade, appended whenever a Setup's trade in STATE 3
 // closes -- via SL/breakeven, its final TP, or stagnation. Purely a read-out for the
@@ -371,6 +405,10 @@ type Setup
     float zoneLow       // bottom of the retracement target zone
     bool  touchedZone   // true once price has traded into the zone at least once
     box   zoneBox       // orange box marking the retracement zone while waiting for entry
+    float volBull       // accumulated proxy buy volume while watching (STATE 1) -- see f_backfillVol
+    float volBear       // accumulated proxy sell volume while watching
+    box   volBullBox     // thin buy-volume-share bar drawn under the locked range (showVolumeBars)
+    box   volBearBox     // thin sell-volume-share bar, stacked just below volBullBox
     float slPrice       // stop-loss price for the (simulated) trade
     float entryPrice    // entry price for the (simulated) trade
     float tp1Price
@@ -530,6 +568,55 @@ f_deleteZoneVisual(s) =>
 f_drawZoneVisual(s) =>
     if showZone
         s.zoneBox := box.new(bar_index, s.zoneHigh, bar_index, s.zoneLow, border_color=color.orange, bgcolor=color.new(color.orange, 85))
+
+// Draws (or resizes) the two thin buy/sell volume-share bars stacked just under a
+// STATE 1 setup's locked range, spanning lockBar -> bar_index and split in proportion
+// to volBull vs volBear so far -- a visual readout of which side the proxy volume
+// confirmation filter currently favors, independent of whether useVolumeFilter is
+// actually gating entries with it.
+f_drawVolumeBars(s) =>
+    totalVol = s.volBull + s.volBear
+    barH = atrVal * 0.18
+    gapH = atrVal * 0.08
+    bullTop = s.lockedLow - gapH
+    bullBot = bullTop - barH
+    bearTop = bullBot - gapH
+    bearBot = bearTop - barH
+    fullWidth = math.max(bar_index - s.lockBar, 1)
+    bullShare = totalVol > 0 ? s.volBull / totalVol : 0.5
+    bearShare = totalVol > 0 ? s.volBear / totalVol : 0.5
+    bullRight = s.lockBar + math.round(fullWidth * bullShare)
+    bearRight = s.lockBar + math.round(fullWidth * bearShare)
+    if na(s.volBullBox)
+        s.volBullBox := box.new(s.lockBar, bullTop, bullRight, bullBot, border_color=na, bgcolor=color.new(upCss, 15))
+        s.volBearBox := box.new(s.lockBar, bearTop, bearRight, bearBot, border_color=na, bgcolor=color.new(dnCss, 15))
+    else
+        box.set_lefttop(s.volBullBox, s.lockBar, bullTop)
+        box.set_rightbottom(s.volBullBox, bullRight, bullBot)
+        box.set_lefttop(s.volBearBox, s.lockBar, bearTop)
+        box.set_rightbottom(s.volBearBox, bearRight, bearBot)
+
+// Deletes a setup's volume bars outright -- used when it's dropped without a valid
+// (volume-confirmed) breakout ever happening, so there's nothing worth keeping.
+f_deleteVolumeBars(s) =>
+    if not na(s.volBullBox)
+        box.delete(s.volBullBox)
+    if not na(s.volBearBox)
+        box.delete(s.volBearBox)
+    s.volBullBox := na
+    s.volBearBox := na
+
+// Retires a setup's volume bars into closedTradeBoxes instead of deleting them --
+// used when a valid breakout actually promotes the setup out of STATE 1, so the
+// volume vote that justified the entry stays visible for the rest of today (same
+// day-rollover sweep as the trade overlay).
+f_retireVolumeBars(s) =>
+    if not na(s.volBullBox)
+        array.push(closedTradeBoxes, s.volBullBox)
+    if not na(s.volBearBox)
+        array.push(closedTradeBoxes, s.volBearBox)
+    s.volBullBox := na
+    s.volBearBox := na
 
 bool exitSignal   = false
 bool isLongEntry  = false   // set true on any bar where a long entry fires (drives the "L" marker)
@@ -757,6 +844,7 @@ if numSetups > 0
                          isImpulse=false, impulsePct=na, preBreakoutLevel=na,
                          zoneHigh=na, zoneLow=na, touchedZone=false, zoneBox=na, slPrice=na, entryPrice=na,
                          tp1Price=na, tp2Price=na, tp3Price=na, tp1Hit=false, tp2Hit=false, tp3Hit=false, slTrailedTp1=false, slTrailedTp2=false,
+                         volBull=0.0, volBear=0.0, volBullBox=na, volBearBox=na,
                          riskBands=array.new<box>(), rewardBands=array.new<box>(),
                          entryLine=na, slLine=na, tp1Line=na, tp2Line=na, tp3Line=na,
                          entryTag=na, slTag=na, tp1Tag=na, tp2Tag=na, tp3Tag=na,
@@ -802,24 +890,51 @@ if numSetups > 0
             bodySize = math.abs(close - open)
             passesBody = not useBodyFilter or bodySize >= bodyATRMult * atrVal
             // "Full-body" breakout: BOTH the open and close must clear the range, not
-            // just a wick -- a single long shadow poking through doesn't count.
-            bullBreak = math.min(open, close) > s.lockedHigh and passesBody
-            bearBreak = math.max(open, close) < s.lockedLow and passesBody
+            // just a wick -- a single long shadow poking through doesn't count. This is
+            // the RAW price-only check -- bullBreak/bearBreak below additionally require
+            // the volume vote (useVolumeFilter) before a setup is allowed to act on it.
+            bullBreakRaw = math.min(open, close) > s.lockedHigh and passesBody
+            bearBreakRaw = math.max(open, close) < s.lockedLow and passesBody
 
             // barstate.isconfirmed: this candle's close is still live/changing on every
             // tick until the bar actually finishes -- without this gate, a breakout could
             // fire mid-candle on a price that later pulls back before the close, only for
-            // the state change to have already stuck (Pine doesn't undo it next tick).
+            // the state change to have already stuck (Pine doesn't undo it next tick). It
+            // also keeps the volume accumulation below from re-adding this bar's volume on
+            // every intrabar tick instead of exactly once, when the reading is final.
             // Both branches below are wrapped by it (not just the breakout check) --
             // bar_index (maxBarsWatch) only advances on a genuinely new bar, so if the
             // timeout is reached on the SAME bar a breakout is forming, an intrabar-only
             // gate on the breakout check would let the timeout fire first and remove the
             // setup before that candle ever gets to close and confirm the breakout.
             if barstate.isconfirmed
+                // Volume confirmation (proxy): judge this bar's raw breakout using ONLY
+                // the tally built up from EARLIER bars, not this one -- the breakout
+                // candle's own volume mechanically favors whichever side just broke, so
+                // counting it would make the "confirmation" nearly meaningless. See
+                // f_backfillVol above for where the split itself comes from.
+                volBullDominant = s.volBull >= s.volBear
+                volBearDominant = s.volBear > s.volBull
+                bullBreak = bullBreakRaw and (not useVolumeFilter or volBullDominant)
+                bearBreak = bearBreakRaw and (not useVolumeFilter or volBearDominant)
+
+                // Only accumulate on bars that AREN'T themselves breaking out, and only
+                // count ones that actually traded inside the range -- same gate f_backfillVol
+                // uses, so a backfilled bar and a live one are judged identically.
+                if (useVolumeFilter or showVolumeBars) and not (bullBreakRaw or bearBreakRaw)
+                    volR = math.max(high - low, syminfo.mintick)
+                    if high > s.lockedLow and low < s.lockedHigh
+                        s.volBull += volume * (close - low) / volR
+                        s.volBear += volume * (high - close) / volR
+
+                if showVolumeBars
+                    f_drawVolumeBars(s)
+
                 if bullBreak or bearBreak
                     s.dir := bullBreak ? 1 : -1
                     s.breakoutTime := time
                     s.breakoutBar := bar_index
+                    f_retireVolumeBars(s)
 
                     // Impulse check: does the breakout candle's BODY already close far enough
                     // beyond the range (as a % of the range's own height) to show strong
@@ -859,6 +974,7 @@ if numSetups > 0
                     // No breakout for too long -- give up on this range entirely.
                     s.stageLog := s.stageLog + "\nState 1: No breakout within " + str.tostring(maxBarsWatch) + " bars (bar " + str.tostring(s.lockBar) + " to " + str.tostring(bar_index) + ") -> setup dropped."
                     label.new(bar_index, high + iLblOffset, "i", style=label.style_label_down, color=color.new(color.gray, 0), textcolor=color.white, size=size.small, tooltip=s.stageLog)
+                    f_deleteVolumeBars(s)
                     removeThis := true
 
         // ============================================================
@@ -1159,11 +1275,21 @@ canArmNewSetup = allowStackedEntries ? array.size(setups) < maxConcurrentSetups 
 // bar actually finishes -- without this gate, a range could be armed off an intrabar
 // reading that the bar's real close never ends up confirming, permanently watching
 // boundaries that a settled close would never have produced.
+// Seed this new setup's volume tally from the rangeLength bars that already formed
+// it, rather than starting from zero -- see f_backfillVol for why.
+float seedVolBull = 0.0
+float seedVolBear = 0.0
+if freshRange and (useVolumeFilter or showVolumeBars)
+    [bfBull, bfBear] = f_backfillVol(rangeLength, rMax, rMin)
+    seedVolBull := bfBull
+    seedVolBear := bfBear
+
 if freshRange and canArmNewSetup and barstate.isconfirmed
     array.push(setups, Setup.new(state=1, lockedHigh=rMax, lockedLow=rMin, lockBar=n, dir=0, breakoutTime=na, breakoutBar=na,
          isImpulse=false, impulsePct=na, preBreakoutLevel=na,
          zoneHigh=na, zoneLow=na, touchedZone=false, zoneBox=na, slPrice=na, entryPrice=na,
          tp1Price=na, tp2Price=na, tp3Price=na, tp1Hit=false, tp2Hit=false, tp3Hit=false, slTrailedTp1=false, slTrailedTp2=false,
+         volBull=seedVolBull, volBear=seedVolBear, volBullBox=na, volBearBox=na,
          riskBands=array.new<box>(), rewardBands=array.new<box>(),
          entryLine=na, slLine=na, tp1Line=na, tp2Line=na, tp3Line=na,
          entryTag=na, slTag=na, tp1Tag=na, tp2Tag=na, tp3Tag=na,
