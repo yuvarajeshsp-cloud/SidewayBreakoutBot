@@ -398,16 +398,56 @@ type Setup
 
 var array<Setup> setups = array.new<Setup>()
 
+// A closed trade's entry/SL/TP box-and-lines overlay is kept on the chart as a
+// historical record for the REST of the day it closed on (that's the whole point of
+// the overlay -- seeing it is "the main thing" the dashboard is for), then swept away
+// at the next day rollover below, same as everything else. Since the Setup itself is
+// discarded the moment its trade closes (removed from `setups`), its visual object
+// ids are retired into these global arrays instead so the day-rollover sweep can
+// still find and delete them once the setup that drew them no longer exists.
+var array<box>   closedTradeBoxes  = array.new<box>()
+var array<line>  closedTradeLines  = array.new<line>()
+var array<label> closedTradeLabels = array.new<label>()
+
+// Moves a setup's "live position" visuals (risk/reward bands, entry/SL/TP lines and
+// right-edge tags) into the closedTrade* arrays above instead of deleting them, so
+// they stay visible for the rest of today. The fixed historical markers
+// (slLbl/tp1Lbl/.../entryInfoLbl) aren't touched here -- those are already permanent
+// on their own, same as the dashboard's tradeHistory.
+f_retireTradeVisuals(s) =>
+    for b in s.riskBands
+        array.push(closedTradeBoxes, b)
+    for b in s.rewardBands
+        array.push(closedTradeBoxes, b)
+    if not na(s.entryLine)
+        array.push(closedTradeLines, s.entryLine)
+    if not na(s.slLine)
+        array.push(closedTradeLines, s.slLine)
+    if not na(s.tp1Line)
+        array.push(closedTradeLines, s.tp1Line)
+    if not na(s.tp2Line)
+        array.push(closedTradeLines, s.tp2Line)
+    if not na(s.tp3Line)
+        array.push(closedTradeLines, s.tp3Line)
+    if not na(s.entryTag)
+        array.push(closedTradeLabels, s.entryTag)
+    if not na(s.slTag)
+        array.push(closedTradeLabels, s.slTag)
+    if not na(s.tp1Tag)
+        array.push(closedTradeLabels, s.tp1Tag)
+    if not na(s.tp2Tag)
+        array.push(closedTradeLabels, s.tp2Tag)
+    if not na(s.tp3Tag)
+        array.push(closedTradeLabels, s.tp3Tag)
+
 // Deletes the "live position" visuals (risk/reward bands, entry/SL/TP lines and
-// right-edge tags) for a setup once its trade closes, instead of relying solely on
-// TradingView's 500-object hard caps to evict them later. The fixed historical
-// markers (slLbl/tp1Lbl/.../entryInfoLbl) are intentionally left alone -- those are
-// meant to be a permanent record on the chart, same as the dashboard's tradeHistory.
-// Also used (together with f_drawTradeVisuals below) to redraw a still-open trade's
-// visuals fresh at day rollover -- so every field is cleared to na/empty here, not
-// just deleted, since a setup that survives this call keeps using these same fields
-// on later bars (the per-bar extend-while-in-trade code below only skips them while
-// riskBands is empty, and calling a set_ method on an already-deleted id errors).
+// right-edge tags) for a setup that is being redrawn in place (day rollover on a
+// still-open trade -- see f_drawTradeVisuals below), as opposed to one whose trade
+// just closed (see f_retireTradeVisuals above). Every field is cleared to na/empty
+// here, not just deleted, since a setup that survives this call keeps using these
+// same fields on later bars (the per-bar extend-while-in-trade code below only skips
+// them while riskBands is empty, and calling a set_ method on an already-deleted id
+// errors).
 f_deleteTradeVisuals(s) =>
     for b in s.riskBands
         box.delete(b)
@@ -505,6 +545,20 @@ bool tp1HitSignal     = false
 bool tp2HitSignal     = false
 bool tp3HitSignal     = false
 bool stagnantSignal   = false
+
+// New day: yesterday's closed trades have shown their entry/SL/TP overlay for the
+// whole day they closed on -- now sweep all of it away at once, same as the range
+// box/line above.
+if isNewDay
+    for b in closedTradeBoxes
+        box.delete(b)
+    for ln in closedTradeLines
+        line.delete(ln)
+    for lbl in closedTradeLabels
+        label.delete(lbl)
+    array.clear(closedTradeBoxes)
+    array.clear(closedTradeLines)
+    array.clear(closedTradeLabels)
 
 // Entries are pushed onto tradedHigh/tradedLow/tradedDir/tradedBar in increasing
 // bar_index order and never removed, so on a long chart they grow without bound even
@@ -673,7 +727,7 @@ if numSetups > 0
                          slLbl=na, tp1Lbl=na, tp2Lbl=na, tp3Lbl=na, entryInfoLbl=na, flipsUsed=s.flipsUsed + 1, entryBar=na, leftEntry=false, confirmedOutOfSession=false,
                          stageLog="State 1: Re-watching range " + str.tostring(s.lockedLow, format.mintick) + " - " + str.tostring(s.lockedHigh, format.mintick) + " for the opposite breakout after an SL (flip #" + str.tostring(s.flipsUsed + 1) + ")."))
                     alert("Sideway Breakout Bot: watching the same range for an opposite breakout", alert.freq_once_per_bar_close)
-                f_deleteTradeVisuals(s)
+                f_retireTradeVisuals(s)
                 removeThis := true
             else if finalTpHit
                 // Trade won all the way to its last target -- just close, no flip.
@@ -687,7 +741,7 @@ if numSetups > 0
                 // "trade closed" on the final tier), so nothing further to append here --
                 // just surface the complete flow at the exact bar the trade actually closes.
                 label.new(bar_index, high + iLblOffset, "i", style=label.style_label_down, color=color.new(color.gray, 0), textcolor=color.white, size=size.small, tooltip=s.stageLog)
-                f_deleteTradeVisuals(s)
+                f_retireTradeVisuals(s)
                 removeThis := true
             else if stagnant
                 // Trade never showed any progress -- cut it, no flip (this isn't an SL hit).
@@ -699,7 +753,7 @@ if numSetups > 0
                 array.push(tradeHistory, TradeRecord.new(exitTime=time, dir=s.dir, exitReason="Stagnant", rResult=f_realizedR(tpsReachedNow, close, s.entryPrice, riskDistance, s.dir), isImpulse=s.isImpulse, tpsReached=tpsReachedNow))
                 s.stageLog := s.stageLog + "\nState 3: No progress within " + str.tostring(stagnationBars) + " bars (price never traded past entry in its favor) -> trade closed stagnant at " + str.tostring(close, format.mintick) + "."
                 label.new(bar_index, high + iLblOffset, "i", style=label.style_label_down, color=color.new(color.gray, 0), textcolor=color.white, size=size.small, tooltip=s.stageLog)
-                f_deleteTradeVisuals(s)
+                f_retireTradeVisuals(s)
                 removeThis := true
                 alert("Sideway Breakout Bot: stagnant trade closed after " + str.tostring(stagnationBars) + " bars", alert.freq_once_per_bar_close)
                 // No native SL/TP triggers a stagnation close -- tell the bridge to flatten every leg.
