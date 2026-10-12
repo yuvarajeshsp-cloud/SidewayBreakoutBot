@@ -53,6 +53,12 @@ tp3R = input.float(3.0, "TP3 (R multiple)", minval=0.1, group=grpTP)
 tp1Pct = input.float(33.0, "TP1 Close %", minval=0, maxval=100, step=1, group=grpTP)
 tp2Pct = input.float(33.0, "TP2 Close %", minval=0, maxval=100, step=1, group=grpTP)
 tp3Pct = input.float(34.0, "TP3 Close %", minval=0, maxval=100, step=1, group=grpTP)
+// Extra stop-ratchet step on top of the plain breakeven-after-TP1 move below: once
+// price has moved halfway from a hit TP to the NEXT one (but hasn't reached that next
+// TP yet), lock the stop in at the TP just passed instead of leaving it sitting at
+// breakeven/the prior TP all the way until the next TP actually hits. Off by default --
+// the existing breakeven-at-TP1 behavior is unchanged when this is off.
+trailStopHalfway = input.bool(false, "Trail Stop Halfway to Next TP (TP1->TP2, TP2->TP3)", group=grpTP)
 
 grpSession = "Trading Session"
 useSessionFilter = input.bool(true, "Restrict Entries to Session", group=grpSession)         // range detection, breakout watching, and retracement waiting all still run 24/7 -- this only gates the final entry
@@ -373,6 +379,8 @@ type Setup
     bool  tp1Hit        // true once price has reached TP1 (also triggers the breakeven move)
     bool  tp2Hit
     bool  tp3Hit
+    bool  slTrailedTp1  // true once the trailStopHalfway ratchet has moved the stop up to TP1 (one-shot, so the bridge MODIFY_SL alert only fires once)
+    bool  slTrailedTp2  // same for the stop moving up to TP2
     array<box> riskBands    // stacked bands from entry to SL, fading from solid (at entry) to transparent (at SL) -- like TradingView's own long/short position tool
     array<box> rewardBands  // same idea, entry to the last active TP
     line  entryLine     // thin line marking the exact entry price
@@ -638,9 +646,37 @@ if numSetups > 0
                 s.stageLog := s.stageLog + "\nState 3: TP3 hit at bar " + str.tostring(bar_index) + " (" + str.tostring(s.tp3Price, format.mintick) + "), trade closed."
                 alert("Sideway Breakout Bot: TP3 hit, trade closed", alert.freq_once_per_bar_close)
 
+            // Optional extra ratchet step (trailStopHalfway), on top of the plain
+            // breakeven-at-TP1 move below: once price has moved halfway from a hit TP to
+            // the next one, lock the stop in at the TP just passed instead of leaving it
+            // sitting at breakeven/the prior TP all the way until the next TP actually
+            // hits. slTrailedTp1/slTrailedTp2 make each step one-shot so the bridge
+            // MODIFY_SL alert and stageLog line only fire on the bar the stop actually
+            // moves, not every bar the halfway condition keeps being true afterward --
+            // not gated on "not yet at the next TP" since a single wide bar can clear the
+            // halfway point and the next TP together, and the ratchet should still catch
+            // up to at least this level either way.
+            if trailStopHalfway and numTPs >= 2 and s.tp1Hit and not s.slTrailedTp1
+                halfway12 = s.tp1Price + 0.5 * (s.tp2Price - s.tp1Price)
+                if s.dir == 1 ? high >= halfway12 : low <= halfway12
+                    s.slTrailedTp1 := true
+                    s.stageLog := s.stageLog + "\nState 3: Price moved halfway from TP1 to TP2 at bar " + str.tostring(bar_index) + " -> SL moved to TP1 (" + str.tostring(s.tp1Price, format.mintick) + ")."
+                    alert("Sideway Breakout Bot: price halfway to TP2, SL moved to TP1", alert.freq_once_per_bar_close)
+                    alert(f_modifySlMsg(f_groupId(s.entryBar, s.dir), s.tp1Price), alert.freq_once_per_bar_close)
+            if trailStopHalfway and numTPs >= 3 and s.tp2Hit and not s.slTrailedTp2
+                halfway23 = s.tp2Price + 0.5 * (s.tp3Price - s.tp2Price)
+                if s.dir == 1 ? high >= halfway23 : low <= halfway23
+                    s.slTrailedTp2 := true
+                    s.stageLog := s.stageLog + "\nState 3: Price moved halfway from TP2 to TP3 at bar " + str.tostring(bar_index) + " -> SL moved to TP2 (" + str.tostring(s.tp2Price, format.mintick) + ")."
+                    alert("Sideway Breakout Bot: price halfway to TP3, SL moved to TP2", alert.freq_once_per_bar_close)
+                    alert(f_modifySlMsg(f_groupId(s.entryBar, s.dir), s.tp2Price), alert.freq_once_per_bar_close)
+
             // Stop moves to breakeven once TP1 has been hit (only meaningful when there's
-            // more than one TP -- with a single TP, hitting it just closes the trade).
-            stopNow = (numTPs >= 2 and s.tp1Hit) ? s.entryPrice : s.slPrice
+            // more than one TP -- with a single TP, hitting it just closes the trade), then
+            // on up to TP1/TP2 via the halfway ratchet above when trailStopHalfway is on.
+            stopNow = (trailStopHalfway and numTPs >= 3 and s.tp2Hit and s.slTrailedTp2) ? s.tp2Price :
+                 (trailStopHalfway and numTPs >= 2 and s.tp1Hit and s.slTrailedTp1) ? s.tp1Price :
+                 (numTPs >= 2 and s.tp1Hit) ? s.entryPrice : s.slPrice
             stopHit = s.dir == 1 ? low <= stopNow : high >= stopNow
 
             // Stretch the visual bands/lines/tags out to the current bar while the trade
@@ -720,7 +756,7 @@ if numSetups > 0
                     array.push(setups, Setup.new(state=1, lockedHigh=s.lockedHigh, lockedLow=s.lockedLow, lockBar=bar_index, dir=0, breakoutTime=na, breakoutBar=na,
                          isImpulse=false, impulsePct=na, preBreakoutLevel=na,
                          zoneHigh=na, zoneLow=na, touchedZone=false, zoneBox=na, slPrice=na, entryPrice=na,
-                         tp1Price=na, tp2Price=na, tp3Price=na, tp1Hit=false, tp2Hit=false, tp3Hit=false,
+                         tp1Price=na, tp2Price=na, tp3Price=na, tp1Hit=false, tp2Hit=false, tp3Hit=false, slTrailedTp1=false, slTrailedTp2=false,
                          riskBands=array.new<box>(), rewardBands=array.new<box>(),
                          entryLine=na, slLine=na, tp1Line=na, tp2Line=na, tp3Line=na,
                          entryTag=na, slTag=na, tp1Tag=na, tp2Tag=na, tp3Tag=na,
@@ -1127,7 +1163,7 @@ if freshRange and canArmNewSetup and barstate.isconfirmed
     array.push(setups, Setup.new(state=1, lockedHigh=rMax, lockedLow=rMin, lockBar=n, dir=0, breakoutTime=na, breakoutBar=na,
          isImpulse=false, impulsePct=na, preBreakoutLevel=na,
          zoneHigh=na, zoneLow=na, touchedZone=false, zoneBox=na, slPrice=na, entryPrice=na,
-         tp1Price=na, tp2Price=na, tp3Price=na, tp1Hit=false, tp2Hit=false, tp3Hit=false,
+         tp1Price=na, tp2Price=na, tp3Price=na, tp1Hit=false, tp2Hit=false, tp3Hit=false, slTrailedTp1=false, slTrailedTp2=false,
          riskBands=array.new<box>(), rewardBands=array.new<box>(),
          entryLine=na, slLine=na, tp1Line=na, tp2Line=na, tp3Line=na,
          entryTag=na, slTag=na, tp1Tag=na, tp2Tag=na, tp3Tag=na,
