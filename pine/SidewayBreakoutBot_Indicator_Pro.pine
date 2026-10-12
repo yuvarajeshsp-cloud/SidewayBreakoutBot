@@ -383,14 +383,21 @@ f_drawVolumeBars(s) =>
     bearShare = totalVol > 0 ? s.volBear / totalVol : 0.5
     bullRight = s.lockBar + math.round(fullWidth * bullShare)
     bearRight = s.lockBar + math.round(fullWidth * bearShare)
+    // Both branches end with an explicit `true` -- without it, the "create" branch's
+    // last statement (a box.new() assignment) and the "resize" branch's (a box.set_*
+    // call) resolve to different implicit types, and this if/else, being this
+    // function's trailing statement, is what Pine infers the function's own return
+    // type from. The return value itself is never used by any caller.
     if na(s.volBullBox)
         s.volBullBox := box.new(s.lockBar, bullTop, bullRight, bullBot, border_color=na, bgcolor=color.new(upCss, 15))
         s.volBearBox := box.new(s.lockBar, bearTop, bearRight, bearBot, border_color=na, bgcolor=color.new(dnCss, 15))
+        true
     else
         box.set_lefttop(s.volBullBox, s.lockBar, bullTop)
         box.set_rightbottom(s.volBullBox, bullRight, bullBot)
         box.set_lefttop(s.volBearBox, s.lockBar, bearTop)
         box.set_rightbottom(s.volBearBox, bearRight, bearBot)
+        true
 
 // Deletes a setup's volume bars -- called once the setup leaves STATE 1 one way or
 // another (a valid breakout promotes it onward, or it times out never getting one),
@@ -687,7 +694,12 @@ if numSetups > 0
                     // always starting at false.
                     scanLen2 = math.max(math.min(bar_index - s.breakoutBar + 1, zoneScanMaxBars), 1)
                     zoneStart2 = s.dir == 1 ? s.zoneHigh : s.zoneLow
-                    s.touchedZone := s.dir == 1 ? ta.lowest(low, scanLen2) <= zoneStart2 : ta.highest(high, scanLen2) >= zoneStart2
+                    // ta.lowest/ta.highest pulled out of the ternary -- calling either one
+                    // only on some bars/branches (not every calculation) is what triggers
+                    // Pine's "should be called on each calculation for consistency" warning.
+                    scanLow2 = ta.lowest(low, scanLen2)
+                    scanHigh2 = ta.highest(high, scanLen2)
+                    s.touchedZone := s.dir == 1 ? scanLow2 <= zoneStart2 : scanHigh2 >= zoneStart2
                     s.state := 2
                     if showZone
                         s.zoneBox := box.new(bar_index, s.zoneHigh, bar_index, s.zoneLow, border_color=color.orange, bgcolor=color.new(color.orange, 85))
